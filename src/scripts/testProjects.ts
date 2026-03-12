@@ -20,9 +20,10 @@ async function main() {
 
 main().catch((error) => {
   console.error('Error al obtener proyectos');
-  if (error.response?.status) {
-    console.error('HTTP Status:', error.response.status);
-    console.error('Response data:', error.response.data);
+  const response = (error as { response?: { status?: number; data?: unknown } }).response;
+  if (response?.status) {
+    console.error('HTTP Status:', response.status);
+    console.error('Response data:', response.data);
   } else {
     console.error(error);
   }

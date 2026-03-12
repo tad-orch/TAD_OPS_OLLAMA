@@ -10,10 +10,30 @@ function required(name: string): string {
   return value;
 }
 
+function optional(name: string, fallback: string): string {
+  return process.env[name]?.trim() || fallback;
+}
+
+function optionalInt(name: string): number | undefined {
+  const raw = process.env[name]?.trim();
+  if (!raw) {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (Number.isNaN(parsed)) {
+    throw new Error(`La variable de entorno ${name} debe ser numérica`);
+  }
+
+  return parsed;
+}
+
 export const env = {
   apsClientId: required('APS_CLIENT_ID'),
   apsClientSecret: required('APS_CLIENT_SECRET'),
   apsAccountId: required('APS_ACCOUNT_ID'),
   apsUserId: required('APS_USER_ID'),
-  apsBaseUrl: (process.env.APS_BASE_URL || 'https://developer.api.autodesk.com').replace(/\/+$/, ''),
+  apsBaseUrl: required('APS_BASE_URL').replace(/\/+$/, ''),
+  ollamaModel: optional('OLLAMA_MODEL', 'qwen2.5-coder:14b'),
+  ollamaContextLength: optionalInt('OLLAMA_CONTEXT_LENGTH'),
 };

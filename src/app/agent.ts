@@ -29,12 +29,48 @@ type AgentOptions = {
   onToolCall?: (name: string) => void;
 };
 
-const MAX_TOOL_LOOPS = 6;
+const MAX_TOOL_LOOPS = 3;
 const PROJECTS_CACHE_TTL_MS = 15 * 60 * 1000;
 const PROJECT_ID_PATTERN = /^(b\.)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SOCIAL_PATTERNS = [
+  /^(hola|holi|buenas|buen día|buenos días|buenas tardes|buenas noches)\b/i,
+  /^(gracias|muchas gracias|mil gracias)\b/i,
+  /^(ok|oki|perfecto|sale|entendido|vale)\b/i,
+  /^(adiós|hasta luego|nos vemos|bye|chau)\b/i,
+  /^(cómo estás|como estas|qué tal|que tal)\b/i
+];
+const OPERATIONAL_HINTS = [
+  'proyecto',
+  'proyectos',
+  'project',
+  'projects',
+  'usuario',
+  'usuarios',
+  'user',
+  'users',
+  'acc',
+  'aps',
+  'hub',
+  'account'
+];
 
-function buildAgentMessages(sessionId: string): Message[] {
-  const builtContext = buildContextForSession(sessionId);
+function shouldUseTools(userText: string): boolean {
+  const normalized = userText.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  if (SOCIAL_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return false;
+  }
+
+  return OPERATIONAL_HINTS.some((hint) => normalized.includes(hint));
+}
+
+function buildAgentMessages(sessionId: string, includeStructuredContext: boolean): Message[] {
+  const builtContext = buildContextForSession(sessionId, {
+    includeStructuredContext
+  });
   console.log(`[agent] Contexto construido para ${sessionId}: approxChars=${builtContext.approxCharCount}`);
 
   return [
@@ -229,13 +265,14 @@ export async function runAgent(
     current_account_id: env.apsAccountId
   });
 
-  const messages = buildAgentMessages(sessionId);
+  const useTools = shouldUseTools(userText);
+  const messages = buildAgentMessages(sessionId, useTools);
   const usedTools: string[] = [];
   let cachedProjects = getFreshProjectsFromCache(env.apsAccountId, PROJECTS_CACHE_TTL_MS) ?? [];
   let lastResponse: ChatResponse | undefined;
 
   for (let loop = 0; loop < MAX_TOOL_LOOPS; loop += 1) {
-    const response = await chatWithOllama(messages, toolDefinitions);
+    const response = await chatWithOllama(messages, useTools ? toolDefinitions : undefined);
     lastResponse = response;
     messages.push(response.message);
 

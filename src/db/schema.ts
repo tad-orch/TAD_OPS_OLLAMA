@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS project_cache (
 
 CREATE TABLE IF NOT EXISTS user_cache (
   project_id TEXT NOT NULL,
-  user_id TEXT NOT NULL PRIMARY KEY,
+  user_id TEXT NOT NULL,
   autodesk_id TEXT,
   email TEXT,
   name TEXT,
@@ -49,7 +49,8 @@ CREATE TABLE IF NOT EXISTS user_cache (
   products_json TEXT,
   roles_json TEXT,
   raw_json TEXT,
-  fetched_at TEXT NOT NULL
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS session_context (
@@ -73,8 +74,76 @@ CREATE INDEX IF NOT EXISTS idx_project_cache_account_name
 
 CREATE INDEX IF NOT EXISTS idx_user_cache_project_email
   ON user_cache(project_id, email);
+
+CREATE INDEX IF NOT EXISTS idx_user_cache_project_id
+  ON user_cache(project_id);
+
+CREATE INDEX IF NOT EXISTS idx_user_cache_fetched_at
+  ON user_cache(fetched_at);
 `;
+
+const userCacheTableSql = `
+CREATE TABLE user_cache (
+  project_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  autodesk_id TEXT,
+  email TEXT,
+  name TEXT,
+  company_name TEXT,
+  status TEXT,
+  products_json TEXT,
+  roles_json TEXT,
+  raw_json TEXT,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, user_id)
+)
+`;
+
+function needsUserCacheMigration(db: Database.Database): boolean {
+  const columns = db
+    .prepare(`PRAGMA table_info(user_cache)`)
+    .all() as Array<{ name: string; pk: number }>;
+
+  if (columns.length === 0) {
+    return false;
+  }
+
+  const projectIdColumn = columns.find((column) => column.name === 'project_id');
+  const userIdColumn = columns.find((column) => column.name === 'user_id');
+
+  return projectIdColumn?.pk !== 1 || userIdColumn?.pk !== 2;
+}
+
+function migrateUserCacheTable(db: Database.Database): void {
+  if (!needsUserCacheMigration(db)) {
+    return;
+  }
+
+  db.exec(`
+    DROP INDEX IF EXISTS idx_user_cache_project_email;
+    DROP INDEX IF EXISTS idx_user_cache_project_id;
+    DROP INDEX IF EXISTS idx_user_cache_fetched_at;
+    ALTER TABLE user_cache RENAME TO user_cache_old;
+    ${userCacheTableSql};
+    INSERT OR REPLACE INTO user_cache (
+      project_id, user_id, autodesk_id, email, name, company_name, status,
+      products_json, roles_json, raw_json, fetched_at
+    )
+    SELECT
+      project_id, user_id, autodesk_id, email, name, company_name, status,
+      products_json, roles_json, raw_json, fetched_at
+    FROM user_cache_old;
+    DROP TABLE user_cache_old;
+    CREATE INDEX IF NOT EXISTS idx_user_cache_project_email
+      ON user_cache(project_id, email);
+    CREATE INDEX IF NOT EXISTS idx_user_cache_project_id
+      ON user_cache(project_id);
+    CREATE INDEX IF NOT EXISTS idx_user_cache_fetched_at
+      ON user_cache(fetched_at);
+  `);
+}
 
 export function initializeSchema(db: Database.Database): void {
   db.exec(schemaSql);
+  migrateUserCacheTable(db);
 }

@@ -83,6 +83,21 @@ export async function getProjectUsersTool(
     ...(products ? { products } : {}),
     ...(region ? { region } : {})
   });
-  replaceUsersCache(cleanedProjectId, users);
-  return summarizeUsersForModel(cleanedProjectId, users);
+
+  const summarizedUsers = summarizeUsersForModel(cleanedProjectId, users);
+
+  try {
+    replaceUsersCache(cleanedProjectId, users);
+    return summarizedUsers;
+  } catch (error) {
+    const warning = error instanceof Error ? error.message : 'No se pudo guardar user_cache';
+    console.warn(`[getProjectUsersTool] Warning al guardar cache para ${cleanedProjectId}: ${warning}`);
+
+    return {
+      ...summarizedUsers,
+      note: summarizedUsers.note
+        ? `${summarizedUsers.note} Warning: no se pudo actualizar user_cache.`
+        : 'Warning: APS devolvió usuarios correctamente, pero no se pudo actualizar user_cache.'
+    };
+  }
 }

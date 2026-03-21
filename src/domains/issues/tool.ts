@@ -1,5 +1,5 @@
 import type { Tool } from 'ollama';
-import { getAccUserReadToken } from '../../services/apsAuth.js';
+import { getValidAccessToken } from '../../services/apsUserAuth.js';
 import type { GetProjectIssuesToolArgs, GetProjectIssuesToolResult } from '../../types/aps.js';
 import { summarizeProjectScopedReadForModel } from '../../utils/summarize.js';
 import { listProjectIssues } from './service.js';
@@ -38,7 +38,7 @@ export async function getProjectIssuesTool(
     throw new Error('get_project_issues requiere projectId');
   }
 
-  const token = await getAccUserReadToken();
+  const token = await getValidAccessToken();
   const response = await listProjectIssues(token, projectId, {
     ...(args.status?.trim() ? { status: args.status.trim() } : {}),
     ...(args.search?.trim() ? { search: args.search.trim() } : {})

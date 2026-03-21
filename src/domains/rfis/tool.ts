@@ -1,5 +1,5 @@
 import type { Tool } from 'ollama';
-import { getAccUserReadToken } from '../../services/apsAuth.js';
+import { getValidAccessToken } from '../../services/apsUserAuth.js';
 import type { GetProjectRfisToolArgs, GetProjectRfisToolResult } from '../../types/aps.js';
 import { summarizeProjectScopedReadForModel } from '../../utils/summarize.js';
 import { listProjectRfis } from './service.js';
@@ -38,7 +38,7 @@ export async function getProjectRfisTool(
     throw new Error('get_project_rfis requiere projectId');
   }
 
-  const token = await getAccUserReadToken();
+  const token = await getValidAccessToken();
   const response = await listProjectRfis(token, projectId, {
     ...(args.status?.trim() ? { status: args.status.trim() } : {}),
     ...(args.search?.trim() ? { search: args.search.trim() } : {})

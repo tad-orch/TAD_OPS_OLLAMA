@@ -85,6 +85,20 @@ export type GetProjectUsersToolResult = {
   note?: string | undefined;
 };
 
+export type StartAccUserLoginToolArgs = {
+  force?: boolean;
+};
+
+export type StartAccUserLoginToolResult = {
+  status: 'already_authenticated' | 'login_started' | 'login_pending';
+  authReady: boolean;
+  callbackUrl: string;
+  authorizationUrl: string;
+  message: string;
+  profileId?: string | undefined;
+  displayName?: string | undefined;
+};
+
 export type ProjectScopedReadItemBase = {
   id: string;
   title?: string | undefined;

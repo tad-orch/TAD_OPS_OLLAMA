@@ -1,5 +1,5 @@
 import type { Tool } from 'ollama';
-import { getAccUserReadToken } from '../../services/apsAuth.js';
+import { getValidAccessToken } from '../../services/apsUserAuth.js';
 import type {
   GetProjectSubmittalsToolArgs,
   GetProjectSubmittalsToolResult
@@ -41,7 +41,7 @@ export async function getProjectSubmittalsTool(
     throw new Error('get_project_submittals requiere projectId');
   }
 
-  const token = await getAccUserReadToken();
+  const token = await getValidAccessToken();
   const response = await listProjectSubmittals(token, projectId, {
     ...(args.status?.trim() ? { status: args.status.trim() } : {}),
     ...(args.search?.trim() ? { search: args.search.trim() } : {})

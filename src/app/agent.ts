@@ -9,6 +9,7 @@ import { addToolCall } from '../db/repositories/toolCallsRepo.js';
 import { systemPrompt, turnPlannerPrompt } from '../prompts/systemPrompt.js';
 import { buildContextForSession } from '../services/contextBuilder.js';
 import { chatWithOllama } from '../services/ollamaClient.js';
+import { getConstructionAuthStatus } from '../services/apsUserAuth.js';
 import { getProjectsByAccountTool } from '../tools/getProjectsTool.js';
 import { toolDefinitions, toolHandlers } from '../tools/index.js';
 import type {
@@ -27,6 +28,7 @@ import type {
   GetProjectSubmittalsToolResult,
   GetProjectTransmittalsToolArgs,
   GetProjectTransmittalsToolResult,
+  StartAccUserLoginToolResult,
   ProjectScopedReadItemBase,
   ProjectScopedReadToolResult
 } from '../types/aps.js';
@@ -136,6 +138,7 @@ const VALID_DOMAINS = new Set<AgentDomain>([
   'rfis',
   'submittals',
   'transmittals',
+  'auth',
   'unknown'
 ]);
 const VALID_INTENTS = new Set<AgentIntent>([
@@ -145,6 +148,7 @@ const VALID_INTENTS = new Set<AgentIntent>([
   'list_rfis',
   'list_submittals',
   'list_transmittals',
+  'start_acc_user_login',
   'unknown'
 ]);
 const PROJECT_SCOPED_TOOL_NAMES = new Set<ToolName>([
@@ -181,7 +185,7 @@ const TURN_PLAN_FORMAT = {
     },
     domain: {
       type: 'string',
-      enum: ['acc_admin', 'issues', 'rfis', 'submittals', 'transmittals', 'unknown']
+      enum: ['acc_admin', 'issues', 'rfis', 'submittals', 'transmittals', 'auth', 'unknown']
     },
     intent: {
       type: 'string',
@@ -192,6 +196,7 @@ const TURN_PLAN_FORMAT = {
         'list_rfis',
         'list_submittals',
         'list_transmittals',
+        'start_acc_user_login',
         'unknown'
       ]
     },
@@ -229,6 +234,7 @@ const TURN_PLAN_FORMAT = {
             enum: [
               'get_projects_by_account',
               'get_project_users',
+              'start_acc_user_login',
               'get_project_issues',
               'get_project_rfis',
               'get_project_submittals',
@@ -951,6 +957,34 @@ function getPreferredProjectScopedReadMemory<TItem extends ProjectScopedReadItem
   return recentSnapshots[0];
 }
 
+async function syncConstructionAuthSessionMetadata(sessionId: string): Promise<void> {
+  const authStatus = await getConstructionAuthStatus();
+  const current = getSessionContext(sessionId);
+  const nextMemory = {
+    ...current?.memory_json,
+    authMode: authStatus.authMode,
+    authReadyForConstructionEndpoints: authStatus.readyForConstructionEndpoints,
+    authPendingLogin: authStatus.pendingLogin
+  };
+
+  if (authStatus.profileId) {
+    nextMemory.authProfileId = authStatus.profileId;
+  } else {
+    delete nextMemory.authProfileId;
+  }
+
+  if (authStatus.displayName) {
+    nextMemory.authDisplayName = authStatus.displayName;
+  } else {
+    delete nextMemory.authDisplayName;
+  }
+
+  upsertSessionContext(sessionId, {
+    current_account_id: env.apsAccountId,
+    memory_json: nextMemory
+  });
+}
+
 async function resolveProjectId(
   projectIdOrName: string,
   cachedProjects: ApsProject[]
@@ -1048,6 +1082,10 @@ async function maybeResolveToolArguments(
 }
 
 function inferIntentFromToolChain(toolChain: PlannedToolCall[]): AgentIntent {
+  if (toolChain.some((step) => step.name === 'start_acc_user_login')) {
+    return 'start_acc_user_login';
+  }
+
   if (toolChain.some((step) => step.name === 'get_project_transmittals')) {
     return 'list_transmittals';
   }
@@ -1141,7 +1179,8 @@ function normalizeTurnPlan(raw: unknown): StructuredTurnPlan | undefined {
         'list_issues',
         'list_rfis',
         'list_submittals',
-        'list_transmittals'
+        'list_transmittals',
+        'start_acc_user_login'
       ].includes(intent));
   let needsClarification = getBoolean(raw.needsClarification) ?? false;
   let clarificationQuestion = getTrimmedString(raw.clarificationQuestion);
@@ -1201,6 +1240,14 @@ function normalizeTurnPlan(raw: unknown): StructuredTurnPlan | undefined {
     }
   }
 
+  if (intent === 'start_acc_user_login') {
+    mode = 'operate';
+    domain = 'auth';
+    needsClarification = false;
+    clarificationQuestion = undefined;
+    requiresTools = true;
+  }
+
   if (mode === 'chat') {
     requiresTools = false;
     needsClarification = false;
@@ -1228,6 +1275,8 @@ function normalizeTurnPlan(raw: unknown): StructuredTurnPlan | undefined {
               ? '¿De qué proyecto quieres que consulte los submittals?'
               : intent === 'list_transmittals'
                 ? '¿De qué proyecto quieres que consulte los transmittals?'
+                : intent === 'start_acc_user_login'
+                  ? '¿Quieres que inicie la autenticación ACC 3-legged?'
         : '¿Qué dato de ACC quieres consultar?';
   }
 
@@ -1250,6 +1299,8 @@ function normalizeTurnPlan(raw: unknown): StructuredTurnPlan | undefined {
                 ? [{ name: 'get_project_submittals', arguments: {} }]
                 : intent === 'list_transmittals'
                   ? [{ name: 'get_project_transmittals', arguments: {} }]
+                  : intent === 'start_acc_user_login'
+                    ? [{ name: 'start_acc_user_login', arguments: {} }]
           : [];
 
   return {
@@ -1319,6 +1370,17 @@ function isGetProjectUsersToolResult(payload: unknown): payload is GetProjectUse
     typeof payload.count === 'number' &&
     typeof payload.projectId === 'string' &&
     Array.isArray(payload.users)
+  );
+}
+
+function isStartAccUserLoginToolResult(payload: unknown): payload is StartAccUserLoginToolResult {
+  return (
+    isRecord(payload) &&
+    typeof payload.status === 'string' &&
+    typeof payload.authReady === 'boolean' &&
+    typeof payload.callbackUrl === 'string' &&
+    typeof payload.authorizationUrl === 'string' &&
+    typeof payload.message === 'string'
   );
 }
 
@@ -1411,6 +1473,24 @@ function formatUsersResponse(
     lines.push(`Nota: ${result.note}`);
   }
 
+  return lines.join('\n');
+}
+
+function formatStartAccUserLoginResponse(result: StartAccUserLoginToolResult): string {
+  const lines = [result.message];
+
+  if (result.displayName || result.profileId) {
+    lines.push('');
+    lines.push(`Perfil: ${result.displayName ?? result.profileId}`);
+  }
+
+  if (result.authorizationUrl) {
+    lines.push('');
+    lines.push(`URL de autorización: ${result.authorizationUrl}`);
+  }
+
+  lines.push('');
+  lines.push(`Callback local: ${result.callbackUrl}`);
   return lines.join('\n');
 }
 
@@ -1595,6 +1675,13 @@ const PROJECT_SCOPED_READ_CONFIGS: ProjectScopedReadConfig<
   }
 ];
 
+async function getConstructionAuthMissingMessage(): Promise<string> {
+  const authStatus = await getConstructionAuthStatus();
+  return authStatus.pendingLogin
+    ? 'Hay una autenticación ACC 3-legged pendiente en el navegador. Complétala y luego vuelve a pedir la consulta.'
+    : 'Necesito autenticación ACC de usuario para consultar Issues, RFIs, Submittals o Transmittals. Ejecuta start_acc_user_login.';
+}
+
 async function runDirectConversation(
   sessionId: string,
   includeStructuredContext: boolean
@@ -1682,6 +1769,10 @@ async function executeToolRequest(
       );
     }
 
+    if (toolRequest.name === 'start_acc_user_login' || PROJECT_SCOPED_READ_TOOL_NAMES.has(toolRequest.name)) {
+      await syncConstructionAuthSessionMetadata(sessionId);
+    }
+
     return {
       ok: true,
       name: toolRequest.name,
@@ -1699,6 +1790,10 @@ async function executeToolRequest(
       JSON.stringify(toolRequest.arguments),
       `${toolRequest.name}: error ${errorMessage}`
     );
+
+    if (toolRequest.name === 'start_acc_user_login' || PROJECT_SCOPED_READ_TOOL_NAMES.has(toolRequest.name)) {
+      await syncConstructionAuthSessionMetadata(sessionId);
+    }
 
     return {
       ok: false,
@@ -2252,6 +2347,17 @@ async function executeProjectScopedReadIntent<
     );
   }
 
+  const authStatus = await getConstructionAuthStatus();
+  if (!authStatus.readyForConstructionEndpoints) {
+    await syncConstructionAuthSessionMetadata(sessionId);
+    return finalizeAgentResult(
+      sessionId,
+      await getConstructionAuthMissingMessage(),
+      usedTools,
+      planningResponse
+    );
+  }
+
   const toolResult = await callToolAndTrack(
     sessionId,
     {
@@ -2439,6 +2545,44 @@ async function executeOperationalPlan(
     );
   }
 
+  if (plan.intent === 'start_acc_user_login') {
+    const loginResult = await callToolAndTrack(
+      sessionId,
+      {
+        name: 'start_acc_user_login',
+        arguments: {}
+      },
+      cachedProjects,
+      usedTools,
+      options
+    );
+
+    if (!loginResult.ok) {
+      return finalizeAgentResult(
+        sessionId,
+        `No pude iniciar la autenticación ACC 3-legged. ${loginResult.error}`,
+        usedTools,
+        planningResponse
+      );
+    }
+
+    if (!isStartAccUserLoginToolResult(loginResult.payload)) {
+      return finalizeAgentResult(
+        sessionId,
+        'No pude formatear el resultado de start_acc_user_login porque la tool devolvió un payload inesperado.',
+        usedTools,
+        planningResponse
+      );
+    }
+
+    return finalizeAgentResult(
+      sessionId,
+      formatStartAccUserLoginResponse(loginResult.payload),
+      usedTools,
+      planningResponse
+    );
+  }
+
   const readConfig = PROJECT_SCOPED_READ_CONFIGS.find((config) => config.intent === plan.intent);
   if (readConfig) {
     return executeProjectScopedReadIntent(
@@ -2532,6 +2676,7 @@ export async function runAgent(
   upsertSessionContext(sessionId, {
     current_account_id: env.apsAccountId
   });
+  await syncConstructionAuthSessionMetadata(sessionId);
 
   let plan: StructuredTurnPlan | undefined;
   let planningResponse: ChatResponse | undefined;

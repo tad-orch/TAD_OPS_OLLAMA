@@ -40,6 +40,7 @@ export type AgentDomain =
   | 'rfis'
   | 'submittals'
   | 'transmittals'
+  | 'auth'
   | 'unknown';
 
 export type AgentIntent =
@@ -49,6 +50,7 @@ export type AgentIntent =
   | 'list_rfis'
   | 'list_submittals'
   | 'list_transmittals'
+  | 'start_acc_user_login'
   | 'unknown';
 
 export type PlannedToolCall = {
@@ -96,6 +98,11 @@ export type SessionMemory = {
   recentProjects?: ProjectMemoryItem[] | undefined;
   lastResolvedProjectId?: string | undefined;
   lastResolvedProjectName?: string | undefined;
+  authMode?: '2legged' | '3legged' | undefined;
+  authReadyForConstructionEndpoints?: boolean | undefined;
+  authPendingLogin?: boolean | undefined;
+  authProfileId?: string | undefined;
+  authDisplayName?: string | undefined;
   recentIssues?: ProjectScopedReadMemory<ApsIssue>[] | undefined;
   recentRfis?: ProjectScopedReadMemory<ApsRfi>[] | undefined;
   recentSubmittals?: ProjectScopedReadMemory<ApsSubmittal>[] | undefined;

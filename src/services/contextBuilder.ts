@@ -116,6 +116,20 @@ function formatContextMessage(sessionId: string, recentMessages: MessageRecord[]
     );
   }
 
+  if (memory?.authMode) {
+    const authState = memory.authReadyForConstructionEndpoints
+      ? '3-legged listo para endpoints de construcción'
+      : memory.authPendingLogin
+        ? '3-legged pendiente en navegador'
+        : memory.authMode === '3legged'
+          ? '3-legged no listo'
+          : 'solo 2-legged disponible';
+    const authLabel = memory.authDisplayName ?? memory.authProfileId;
+    lines.push(
+      `- constructionAuth: ${authState}${authLabel ? ` (${authLabel})` : ''}`
+    );
+  }
+
   if (memory?.recentProjects?.length) {
     const activeProjects = memory.recentProjects.filter((project) => project.lifecycle === 'active').length;
     const archivedProjects = memory.recentProjects.filter(

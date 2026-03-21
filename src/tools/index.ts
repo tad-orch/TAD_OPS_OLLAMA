@@ -10,10 +10,12 @@ import {
 } from '../domains/transmittals/tool.js';
 import { getProjectUsersTool, getProjectUsersToolDefinition } from './getProjectUsersTool.js';
 import { getProjectsByAccountTool, getProjectsToolDefinition } from './getProjectsTool.js';
+import { startAccUserLoginTool, startAccUserLoginToolDefinition } from './startAccUserLoginTool.js';
 
 export const toolDefinitions = [
   getProjectsToolDefinition,
   getProjectUsersToolDefinition,
+  startAccUserLoginToolDefinition,
   getProjectIssuesToolDefinition,
   getProjectRfisToolDefinition,
   getProjectSubmittalsToolDefinition,
@@ -23,6 +25,7 @@ export const toolDefinitions = [
 export const toolHandlers = {
   get_projects_by_account: getProjectsByAccountTool,
   get_project_users: getProjectUsersTool,
+  start_acc_user_login: startAccUserLoginTool,
   get_project_issues: getProjectIssuesTool,
   get_project_rfis: getProjectRfisTool,
   get_project_submittals: getProjectSubmittalsTool,

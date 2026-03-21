@@ -1,5 +1,5 @@
 import type { Tool } from 'ollama';
-import { getAccUserReadToken } from '../../services/apsAuth.js';
+import { getValidAccessToken } from '../../services/apsUserAuth.js';
 import type {
   GetProjectTransmittalsToolArgs,
   GetProjectTransmittalsToolResult
@@ -41,7 +41,7 @@ export async function getProjectTransmittalsTool(
     throw new Error('get_project_transmittals requiere projectId');
   }
 
-  const token = await getAccUserReadToken();
+  const token = await getValidAccessToken();
   const response = await listProjectTransmittals(token, projectId, {
     ...(args.status?.trim() ? { status: args.status.trim() } : {}),
     ...(args.search?.trim() ? { search: args.search.trim() } : {})

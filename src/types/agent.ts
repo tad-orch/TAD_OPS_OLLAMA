@@ -25,6 +25,39 @@ export type ToolCallRecord = {
   created_at: string;
 };
 
+export type AgentMode = 'chat' | 'operate';
+
+export type AgentDomain = 'acc_admin' | 'unknown';
+
+export type AgentIntent = 'list_projects' | 'get_project_users' | 'unknown';
+
+export type PlannedToolCall = {
+  name: string;
+  arguments: Record<string, unknown>;
+};
+
+export type TurnEntities = {
+  accountId?: string | undefined;
+  projectId?: string | undefined;
+  projectName?: string | undefined;
+  useCurrentProject?: boolean | undefined;
+  products?: string[] | undefined;
+  region?: string | undefined;
+  actingUserId?: string | undefined;
+};
+
+export type StructuredTurnPlan = {
+  mode: AgentMode;
+  domain: AgentDomain;
+  intent: AgentIntent;
+  confidence: number;
+  entities: TurnEntities;
+  requiresTools: boolean;
+  proposedToolChain: PlannedToolCall[];
+  needsClarification: boolean;
+  clarificationQuestion?: string | undefined;
+};
+
 export type ProjectMemoryItem = {
   id: string;
   name: string;

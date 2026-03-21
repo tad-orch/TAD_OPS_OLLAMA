@@ -4,13 +4,18 @@ import { env } from '../config/env.js';
 
 export const ollamaClient = ollama;
 
+type ChatWithOllamaOptions = {
+  tools?: Tool[] | undefined;
+  format?: string | object | undefined;
+};
+
 export function getOllamaModel(): string {
   return env.ollamaModel;
 }
 
 export async function chatWithOllama(
   messages: Message[],
-  tools?: Tool[]
+  options: ChatWithOllamaOptions = {}
 ): Promise<ChatResponse> {
   const approxCharCount = messages.reduce((total, message) => total + message.content.length, 0);
   console.log(
@@ -20,7 +25,8 @@ export async function chatWithOllama(
   return ollamaClient.chat({
     model: getOllamaModel(),
     messages,
-    ...(tools ? { tools } : {}),
+    ...(options.tools ? { tools: options.tools } : {}),
+    ...(options.format ? { format: options.format } : {}),
     ...(env.ollamaContextLength ? { options: { num_ctx: env.ollamaContextLength } } : {}),
     stream: false
   });

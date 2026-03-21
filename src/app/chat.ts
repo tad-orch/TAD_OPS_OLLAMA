@@ -8,7 +8,7 @@ async function main() {
   const rl = createInterface({ input, output });
   let currentSession = createSession();
 
-  console.log(`Chat APS + Ollama listo. Sesión actual: ${currentSession.id}`);
+  console.log(`ACC Expert Agent listo. Sesión actual: ${currentSession.id}`);
   console.log('Comandos: /exit, /session, /context, /new');
 
   try {

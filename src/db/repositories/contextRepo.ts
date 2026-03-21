@@ -33,18 +33,27 @@ export function getSessionContext(sessionId: string): SessionContextRecord | und
 export function upsertSessionContext(
   sessionId: string,
   patch: {
-    current_account_id?: string;
-    current_project_id?: string;
-    current_project_name?: string;
+    current_account_id?: string | null;
+    current_project_id?: string | null;
+    current_project_name?: string | null;
     memory_json?: SessionMemory;
   }
 ): SessionContextRecord {
   const current = getSessionContext(sessionId);
   const nextContext: SessionContextRecord = {
     session_id: sessionId,
-    current_account_id: patch.current_account_id ?? current?.current_account_id,
-    current_project_id: patch.current_project_id ?? current?.current_project_id,
-    current_project_name: patch.current_project_name ?? current?.current_project_name,
+    current_account_id:
+      patch.current_account_id === undefined
+        ? current?.current_account_id
+        : (patch.current_account_id ?? undefined),
+    current_project_id:
+      patch.current_project_id === undefined
+        ? current?.current_project_id
+        : (patch.current_project_id ?? undefined),
+    current_project_name:
+      patch.current_project_name === undefined
+        ? current?.current_project_name
+        : (patch.current_project_name ?? undefined),
     memory_json: patch.memory_json ?? current?.memory_json ?? {},
     updated_at: nowIso()
   };

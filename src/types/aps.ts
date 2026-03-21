@@ -85,6 +85,72 @@ export type GetProjectUsersToolResult = {
   note?: string | undefined;
 };
 
+export type ProjectScopedReadItemBase = {
+  id: string;
+  title?: string | undefined;
+  status?: string | undefined;
+  dueDate?: string | undefined;
+  createdAt?: string | undefined;
+};
+
+export type ApsIssue = ProjectScopedReadItemBase & {
+  issueId?: string | undefined;
+  type?: string | undefined;
+  assignedTo?: string | undefined;
+  location?: string | undefined;
+};
+
+export type ApsRfi = ProjectScopedReadItemBase & {
+  rfiId?: string | undefined;
+  type?: string | undefined;
+  assignedTo?: string | undefined;
+  location?: string | undefined;
+};
+
+export type ApsSubmittal = ProjectScopedReadItemBase & {
+  submittalId?: string | undefined;
+  type?: string | undefined;
+  response?: string | undefined;
+  spec?: string | undefined;
+  assignedTo?: string | undefined;
+  manager?: string | undefined;
+};
+
+export type ApsTransmittal = ProjectScopedReadItemBase & {
+  transmittalId?: string | undefined;
+  number?: string | undefined;
+  createdBy?: string | undefined;
+};
+
+export type ProjectScopedReadFilters = {
+  status?: string | undefined;
+  search?: string | undefined;
+};
+
+export type ProjectScopedReadToolArgs = {
+  projectId: string;
+  status?: string;
+  search?: string;
+};
+
+export type ProjectScopedReadToolResult<TItem> = {
+  projectId: string;
+  total: number;
+  items: TItem[];
+  source: string;
+  warning?: string | undefined;
+};
+
+export type GetProjectIssuesToolArgs = ProjectScopedReadToolArgs;
+export type GetProjectRfisToolArgs = ProjectScopedReadToolArgs;
+export type GetProjectSubmittalsToolArgs = ProjectScopedReadToolArgs;
+export type GetProjectTransmittalsToolArgs = ProjectScopedReadToolArgs;
+
+export type GetProjectIssuesToolResult = ProjectScopedReadToolResult<ApsIssue>;
+export type GetProjectRfisToolResult = ProjectScopedReadToolResult<ApsRfi>;
+export type GetProjectSubmittalsToolResult = ProjectScopedReadToolResult<ApsSubmittal>;
+export type GetProjectTransmittalsToolResult = ProjectScopedReadToolResult<ApsTransmittal>;
+
 export type AgentResult = {
   text: string;
   toolCalls: string[];

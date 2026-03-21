@@ -1,6 +1,7 @@
 import type {
   ApsProject,
   ApsProjectUser,
+  ProjectScopedReadToolResult,
   GetProjectUsersToolResult,
   GetProjectsToolResult
 } from '../types/aps.js';
@@ -47,6 +48,28 @@ export function summarizeUsersForModel(
   };
 }
 
+export function summarizeProjectScopedReadForModel<TItem>(
+  projectId: string,
+  items: TItem[],
+  source: string,
+  warning?: string
+): ProjectScopedReadToolResult<TItem> {
+  const nextWarning =
+    items.length > MAX_ITEMS_FOR_MODEL
+      ? warning
+        ? `${warning} Se muestran ${MAX_ITEMS_FOR_MODEL} de ${items.length} resultados; el snapshot completo reciente queda disponible para follow-ups.`
+        : `Se muestran ${MAX_ITEMS_FOR_MODEL} de ${items.length} resultados; el snapshot completo reciente queda disponible para follow-ups.`
+      : warning;
+
+  return {
+    projectId,
+    total: items.length,
+    items: items.slice(0, MAX_ITEMS_FOR_MODEL),
+    source,
+    ...(nextWarning ? { warning: nextWarning } : {})
+  };
+}
+
 export function summarizeToolResultForStorage(toolName: string, payload: unknown): string {
   if (typeof payload !== 'object' || payload === null) {
     return String(payload);
@@ -55,6 +78,11 @@ export function summarizeToolResultForStorage(toolName: string, payload: unknown
   const maybeCount = Reflect.get(payload, 'count');
   if (typeof maybeCount === 'number') {
     return `${toolName}: ${maybeCount} resultados`;
+  }
+
+  const maybeTotal = Reflect.get(payload, 'total');
+  if (typeof maybeTotal === 'number') {
+    return `${toolName}: ${maybeTotal} resultados`;
   }
 
   return `${toolName}: resultado registrado`;

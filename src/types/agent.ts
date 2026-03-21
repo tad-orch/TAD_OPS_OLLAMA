@@ -1,4 +1,11 @@
 import type { Message } from 'ollama';
+import type {
+  ApsIssue,
+  ApsRfi,
+  ApsSubmittal,
+  ApsTransmittal,
+  ProjectScopedReadToolResult
+} from './aps.js';
 
 export type SessionRecord = {
   id: string;
@@ -27,9 +34,22 @@ export type ToolCallRecord = {
 
 export type AgentMode = 'chat' | 'operate';
 
-export type AgentDomain = 'acc_admin' | 'unknown';
+export type AgentDomain =
+  | 'acc_admin'
+  | 'issues'
+  | 'rfis'
+  | 'submittals'
+  | 'transmittals'
+  | 'unknown';
 
-export type AgentIntent = 'list_projects' | 'get_project_users' | 'unknown';
+export type AgentIntent =
+  | 'list_projects'
+  | 'get_project_users'
+  | 'list_issues'
+  | 'list_rfis'
+  | 'list_submittals'
+  | 'list_transmittals'
+  | 'unknown';
 
 export type PlannedToolCall = {
   name: string;
@@ -58,15 +78,28 @@ export type StructuredTurnPlan = {
   clarificationQuestion?: string | undefined;
 };
 
+export type ProjectLifecycle = 'active' | 'archived' | 'unknown';
+
 export type ProjectMemoryItem = {
   id: string;
   name: string;
+  status?: string | undefined;
+  lifecycle?: ProjectLifecycle | undefined;
+};
+
+export type ProjectScopedReadMemory<TItem> = ProjectScopedReadToolResult<TItem> & {
+  projectName?: string | undefined;
+  fetchedAt: string;
 };
 
 export type SessionMemory = {
   recentProjects?: ProjectMemoryItem[] | undefined;
   lastResolvedProjectId?: string | undefined;
   lastResolvedProjectName?: string | undefined;
+  recentIssues?: ProjectScopedReadMemory<ApsIssue>[] | undefined;
+  recentRfis?: ProjectScopedReadMemory<ApsRfi>[] | undefined;
+  recentSubmittals?: ProjectScopedReadMemory<ApsSubmittal>[] | undefined;
+  recentTransmittals?: ProjectScopedReadMemory<ApsTransmittal>[] | undefined;
 };
 
 export type SessionContextRecord = {

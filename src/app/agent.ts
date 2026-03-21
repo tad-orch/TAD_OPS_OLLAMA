@@ -3,6 +3,7 @@ import { env } from '../config/env.js';
 import { getSessionContext, upsertSessionContext } from '../db/repositories/contextRepo.js';
 import { addMessage } from '../db/repositories/messagesRepo.js';
 import { getFreshProjectsFromCache } from '../db/repositories/projectCacheRepo.js';
+import { getFreshUsersFromCache } from '../db/repositories/userCacheRepo.js';
 import { getSessionById, touchSession, updateSessionAfterUserMessage } from '../db/repositories/sessionsRepo.js';
 import { addToolCall } from '../db/repositories/toolCallsRepo.js';
 import { systemPrompt, turnPlannerPrompt } from '../prompts/systemPrompt.js';
@@ -12,17 +13,30 @@ import { getProjectsByAccountTool } from '../tools/getProjectsTool.js';
 import { toolDefinitions, toolHandlers } from '../tools/index.js';
 import type {
   AgentResult,
+  GetProjectIssuesToolArgs,
+  GetProjectIssuesToolResult,
   ApsProject,
+  ApsProjectUser,
   GetProjectUsersToolArgs,
   GetProjectUsersToolResult,
+  GetProjectRfisToolArgs,
+  GetProjectRfisToolResult,
   GetProjectsToolArgs,
-  GetProjectsToolResult
+  GetProjectsToolResult,
+  GetProjectSubmittalsToolArgs,
+  GetProjectSubmittalsToolResult,
+  GetProjectTransmittalsToolArgs,
+  GetProjectTransmittalsToolResult,
+  ProjectScopedReadItemBase,
+  ProjectScopedReadToolResult
 } from '../types/aps.js';
 import type {
   AgentDomain,
   AgentIntent,
   AgentMode,
   PlannedToolCall,
+  ProjectMemoryItem,
+  ProjectScopedReadMemory,
   StructuredTurnPlan
 } from '../types/agent.js';
 import { summarizeToolResultForStorage } from '../utils/summarize.js';
@@ -72,6 +86,23 @@ type ProjectResolution =
       projectId?: string;
     };
 
+type ProjectScopedReadMemoryKey =
+  | 'recentIssues'
+  | 'recentRfis'
+  | 'recentSubmittals'
+  | 'recentTransmittals';
+
+type ProjectScopedReadConfig<TArgs extends { projectId: string }, TResult> = {
+  intent: AgentIntent;
+  toolName: ToolName;
+  domain: AgentDomain;
+  memoryKey: ProjectScopedReadMemoryKey;
+  missingProjectQuestion: string;
+  formatSuccess: (result: TResult, projectName?: string) => string;
+  formatFailure: (error: string, projectId?: string, projectName?: string) => string;
+  isResult: (payload: unknown) => payload is TResult;
+};
+
 type AgentOptions = {
   onToolCall?: (name: string) => void;
 };
@@ -82,12 +113,53 @@ type BuildAgentMessagesOptions = {
   extraSystemMessages?: string[];
 };
 
+type RuntimeProjectQuery = {
+  wantsProjectList: boolean;
+  wantsStatusCounts: boolean;
+  wantsPrefixFilter: boolean;
+  prefix?: string;
+  wantsProjectUsers: boolean;
+  projectReference?: string;
+  wantsUserCompanyCounts: boolean;
+  isCompound: boolean;
+};
+
 const MAX_FREEFORM_TOOL_LOOPS = 3;
 const PROJECTS_CACHE_TTL_MS = 15 * 60 * 1000;
+const USERS_CACHE_TTL_MS = 10 * 60 * 1000;
+const MAX_RECENT_PROJECT_SCOPED_SNAPSHOTS = 4;
 const PROJECT_ID_PATTERN = /^(b\.)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const VALID_MODES = new Set<AgentMode>(['chat', 'operate']);
-const VALID_DOMAINS = new Set<AgentDomain>(['acc_admin', 'unknown']);
-const VALID_INTENTS = new Set<AgentIntent>(['list_projects', 'get_project_users', 'unknown']);
+const VALID_DOMAINS = new Set<AgentDomain>([
+  'acc_admin',
+  'issues',
+  'rfis',
+  'submittals',
+  'transmittals',
+  'unknown'
+]);
+const VALID_INTENTS = new Set<AgentIntent>([
+  'list_projects',
+  'get_project_users',
+  'list_issues',
+  'list_rfis',
+  'list_submittals',
+  'list_transmittals',
+  'unknown'
+]);
+const PROJECT_SCOPED_TOOL_NAMES = new Set<ToolName>([
+  'get_project_users',
+  'get_project_issues',
+  'get_project_rfis',
+  'get_project_submittals',
+  'get_project_transmittals'
+]);
+const PROJECT_SCOPED_READ_TOOL_NAMES = new Set<ToolName>([
+  'get_project_issues',
+  'get_project_rfis',
+  'get_project_submittals',
+  'get_project_transmittals'
+]);
 const TURN_PLAN_FORMAT = {
   type: 'object',
   additionalProperties: false,
@@ -109,11 +181,19 @@ const TURN_PLAN_FORMAT = {
     },
     domain: {
       type: 'string',
-      enum: ['acc_admin', 'unknown']
+      enum: ['acc_admin', 'issues', 'rfis', 'submittals', 'transmittals', 'unknown']
     },
     intent: {
       type: 'string',
-      enum: ['list_projects', 'get_project_users', 'unknown']
+      enum: [
+        'list_projects',
+        'get_project_users',
+        'list_issues',
+        'list_rfis',
+        'list_submittals',
+        'list_transmittals',
+        'unknown'
+      ]
     },
     confidence: {
       type: 'number'
@@ -146,7 +226,14 @@ const TURN_PLAN_FORMAT = {
         properties: {
           name: {
             type: 'string',
-            enum: ['get_projects_by_account', 'get_project_users']
+            enum: [
+              'get_projects_by_account',
+              'get_project_users',
+              'get_project_issues',
+              'get_project_rfis',
+              'get_project_submittals',
+              'get_project_transmittals'
+            ]
           },
           arguments: {
             type: 'object'
@@ -416,6 +503,285 @@ function dedupeProjects(projects: ApsProject[]): ApsProject[] {
   return [...deduped.values()];
 }
 
+function getProjectLifecycle(
+  project: Pick<ApsProject, 'status'>
+): ProjectMemoryItem['lifecycle'] {
+  const normalizedStatus = project.status?.trim().toLowerCase();
+  if (!normalizedStatus) {
+    return 'unknown';
+  }
+
+  if (normalizedStatus.includes('archiv') || normalizedStatus.includes('inactive')) {
+    return 'archived';
+  }
+
+  if (normalizedStatus === 'active' || normalizedStatus.includes('activ')) {
+    return 'active';
+  }
+
+  return 'unknown';
+}
+
+function projectMemoryToProject(project: ProjectMemoryItem): ApsProject {
+  return {
+    id: project.id,
+    name: project.name,
+    ...(project.status ? { status: project.status } : {})
+  };
+}
+
+function getProjectsFromMemory(sessionId: string): ApsProject[] {
+  const recentProjects = getSessionContext(sessionId)?.memory_json.recentProjects ?? [];
+  return dedupeProjects(recentProjects.map((project) => projectMemoryToProject(project)));
+}
+
+function getProjectsFromOperationalSources(
+  sessionId: string,
+  cachedProjects: ApsProject[]
+): ApsProject[] {
+  return dedupeProjects([
+    ...cachedProjects,
+    ...getProjectsFromMemory(sessionId),
+    ...(getFreshProjectsFromCache(env.apsAccountId, PROJECTS_CACHE_TTL_MS) ?? [])
+  ]);
+}
+
+function countProjectsByLifecycle(
+  projects: ApsProject[]
+): { active: number; archived: number; unknown: number } {
+  return projects.reduce(
+    (counts, project) => {
+      const lifecycle = getProjectLifecycle(project);
+      if (lifecycle === 'active') {
+        counts.active += 1;
+      } else if (lifecycle === 'archived') {
+        counts.archived += 1;
+      } else {
+        counts.unknown += 1;
+      }
+      return counts;
+    },
+    { active: 0, archived: 0, unknown: 0 }
+  );
+}
+
+function filterProjectsByPrefix(projects: ApsProject[], prefix: string): ApsProject[] {
+  const normalizedPrefix = normalizeProjectLookupKey(prefix);
+  if (!normalizedPrefix) {
+    return [];
+  }
+
+  return dedupeProjects(projects).filter((project) =>
+    normalizeProjectLookupKey(project.name).startsWith(normalizedPrefix)
+  );
+}
+
+function countUsersByCompany(users: ApsProjectUser[]): Array<{ companyName: string; count: number }> {
+  const grouped = new Map<string, number>();
+  for (const user of users) {
+    const companyName = user.companyName?.trim() || 'Sin empresa';
+    grouped.set(companyName, (grouped.get(companyName) ?? 0) + 1);
+  }
+
+  return [...grouped.entries()]
+    .map(([companyName, count]) => ({ companyName, count }))
+    .sort((left, right) => right.count - left.count || left.companyName.localeCompare(right.companyName));
+}
+
+function buildProjectStatusLabel(project: Pick<ApsProject, 'status'>): string {
+  const lifecycle = getProjectLifecycle(project);
+  if (lifecycle === 'active') {
+    return 'activo';
+  }
+
+  if (lifecycle === 'archived') {
+    return 'archivado';
+  }
+
+  return project.status?.trim() || 'sin clasificar';
+}
+
+function extractPrefixFromText(userText: string): string | undefined {
+  const explicitPatterns = [
+    /siglas?\s+["“']?([A-Za-z0-9_-]{2,})["”']?/i,
+    /prefijo\s+["“']?([A-Za-z0-9_-]{2,})["”']?/i,
+    /(?:empiez[a-z]*|comienz[a-z]*)\s+con\s+(?:las\s+siglas\s+|la\s+sigla\s+|el\s+prefijo\s+)?["“']?([A-Za-z0-9_-]{2,})["”']?/i
+  ];
+
+  for (const pattern of explicitPatterns) {
+    const explicitMatch = userText.match(pattern);
+    if (explicitMatch?.[1]?.trim()) {
+      return explicitMatch[1].trim();
+    }
+  }
+
+  const quotedMatch = userText.match(/["“']([A-Za-z0-9_-]{2,})["”']/);
+  return quotedMatch?.[1]?.trim() || undefined;
+}
+
+function extractProjectReferenceFromText(userText: string): string | undefined {
+  const patterns = [
+    /(?:usuarios?|users?)\s+(?:reales\s+)?(?:del|de)\s+proyecto\s+["“']?([^".,\n]+?)["”']?(?=$|[,.]|(?:\s+y\s+por\s+)|(?:\s+y\s+luego)|(?:\s+y\s+desp(?:u|ú)es)|(?:\s+y\s+finalmente))/i,
+    /\bproyecto\s+["“']?([^".,\n]+?)["”']?(?=$|[,.]|(?:\s+y\s+por\s+)|(?:\s+y\s+luego)|(?:\s+y\s+desp(?:u|ú)es)|(?:\s+y\s+finalmente))/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = userText.match(pattern);
+    if (match?.[1]?.trim()) {
+      return match[1].trim();
+    }
+  }
+
+  return undefined;
+}
+
+function analyzeRuntimeProjectQuery(
+  userText: string,
+  plan: StructuredTurnPlan
+): RuntimeProjectQuery {
+  const lowered = userText.toLowerCase();
+  const prefix = extractPrefixFromText(userText);
+  const projectReference =
+    plan.entities.projectName?.trim() ||
+    plan.entities.projectId?.trim() ||
+    extractProjectReferenceFromText(userText);
+
+  const wantsStatusCounts =
+    /\bproyectos?\b/.test(lowered) &&
+    (/\bactivos?\b/.test(lowered) ||
+      /\barchivad[oa]s?\b/.test(lowered) ||
+      /\binactiv[oa]s?\b/.test(lowered));
+  const wantsPrefixFilter =
+    Boolean(prefix) && /\b(empiez|comienz|prefijo|siglas)\b/i.test(userText);
+  const wantsProjectList =
+    plan.intent === 'list_projects' ||
+    (/\bproyectos?\b/.test(lowered) &&
+      /\b(hub|lista|listar|dime|mu[eé]strame|muestrame|cu[aá]les|cuales)\b/.test(lowered));
+  const wantsProjectUsers =
+    plan.intent === 'get_project_users' ||
+    ((/\busuarios?\b/.test(lowered) || /\busers?\b/.test(lowered)) &&
+      (Boolean(projectReference) || /\bproyecto\b/.test(lowered) || plan.entities.useCurrentProject === true));
+  const wantsUserCompanyCounts =
+    (/\busuarios?\b/.test(lowered) || /\busers?\b/.test(lowered)) &&
+    /\b(empresas?|compa(?:ñ|n)[ií]as?|company|companies)\b/.test(lowered);
+  const subtaskCount = [
+    wantsProjectList,
+    wantsStatusCounts,
+    wantsPrefixFilter,
+    wantsProjectUsers,
+    wantsUserCompanyCounts
+  ].filter(Boolean).length;
+  const isCompound =
+    subtaskCount > 1 ||
+    /\b(primero|segundo|tercero|por último|por ultimo|adem[aá]s|por lo último)\b/i.test(userText);
+
+  return {
+    wantsProjectList,
+    wantsStatusCounts,
+    wantsPrefixFilter,
+    ...(prefix ? { prefix } : {}),
+    wantsProjectUsers,
+    ...(projectReference ? { projectReference } : {}),
+    wantsUserCompanyCounts,
+    isCompound
+  };
+}
+
+function formatProjectListSection(projects: ApsProject[]): string {
+  const lines = [`Proyectos del hub (${projects.length}):`, ''];
+  lines.push(
+    ...projects.slice(0, 25).map((project) => {
+      const statusLabel = buildProjectStatusLabel(project);
+      return `- ${project.name} (${project.id}) [${statusLabel}]`;
+    })
+  );
+
+  if (projects.length > 25) {
+    lines.push('');
+    lines.push(`Nota: mostré 25 proyectos; hay ${projects.length} en memoria/caché.`);
+  }
+
+  return lines.join('\n');
+}
+
+function formatProjectStatusCountsSection(projects: ApsProject[]): string {
+  const counts = countProjectsByLifecycle(projects);
+  const lines = ['Conteo de proyectos por estado:', ''];
+  lines.push(`- Activos: ${counts.active}`);
+  lines.push(`- Archivados o inactivos: ${counts.archived}`);
+
+  if (counts.unknown > 0) {
+    lines.push(`- Sin clasificar: ${counts.unknown}`);
+  }
+
+  return lines.join('\n');
+}
+
+function formatProjectPrefixSection(prefix: string, projects: ApsProject[]): string {
+  const lines = [`Proyectos que empiezan con "${prefix}" (${projects.length}):`];
+
+  if (projects.length === 0) {
+    lines.push('');
+    lines.push(`No encontré proyectos cuyo nombre empiece con "${prefix}".`);
+    return lines.join('\n');
+  }
+
+  lines.push('');
+  lines.push(...projects.map((project) => `- ${project.name} (${project.id})`));
+  return lines.join('\n');
+}
+
+function formatUserCompanyCountsSection(
+  projectLabel: string,
+  users: ApsProjectUser[]
+): string {
+  const grouped = countUsersByCompany(users);
+  const lines = [`Usuarios por empresa en ${projectLabel}:`, ''];
+  lines.push(...grouped.map((item) => `- ${item.companyName}: ${item.count}`));
+  return lines.join('\n');
+}
+
+function getFreshUsersForSessionProject(
+  sessionId: string
+): { projectId: string; projectName?: string; users: ApsProjectUser[] } | undefined {
+  const sessionContext = getSessionContext(sessionId);
+  const candidates: Array<{ projectId: string; projectName?: string }> = [];
+
+  if (sessionContext?.current_project_id) {
+    candidates.push({
+      projectId: sessionContext.current_project_id,
+      ...(sessionContext.current_project_name
+        ? { projectName: sessionContext.current_project_name }
+        : {})
+    });
+  }
+
+  if (
+    sessionContext?.memory_json.lastResolvedProjectId &&
+    !candidates.some((candidate) => candidate.projectId === sessionContext.memory_json.lastResolvedProjectId)
+  ) {
+    candidates.push({
+      projectId: sessionContext.memory_json.lastResolvedProjectId,
+      ...(sessionContext.memory_json.lastResolvedProjectName
+        ? { projectName: sessionContext.memory_json.lastResolvedProjectName }
+        : {})
+    });
+  }
+
+  for (const candidate of candidates) {
+    const users = getFreshUsersFromCache(candidate.projectId, USERS_CACHE_TTL_MS);
+    if (users) {
+      return {
+        projectId: candidate.projectId,
+        ...(candidate.projectName ? { projectName: candidate.projectName } : {}),
+        users
+      };
+    }
+  }
+
+  return undefined;
+}
+
 function findProjectById(projects: ApsProject[], projectId: string): ApsProject | undefined {
   const normalizedProjectId = projectId.replace(/^b\./, '');
   return dedupeProjects(projects).find((project) => project.id === normalizedProjectId);
@@ -476,9 +842,11 @@ function updateProjectsMemory(sessionId: string, projects: ApsProject[]): void {
     current_account_id: env.apsAccountId,
     memory_json: {
       ...current?.memory_json,
-      recentProjects: projects.slice(0, 5).map((project) => ({
+      recentProjects: dedupeProjects(projects).slice(0, 100).map((project) => ({
         id: project.id,
-        name: project.name
+        name: project.name,
+        ...(project.status ? { status: project.status } : {}),
+        lifecycle: getProjectLifecycle(project)
       }))
     }
   });
@@ -507,6 +875,80 @@ function updateProjectSelectionMemory(
     current_project_name: projectName ?? null,
     memory_json: nextMemory
   });
+}
+
+function getProjectScopedReadMemory<TItem extends ProjectScopedReadItemBase>(
+  sessionId: string,
+  key: ProjectScopedReadMemoryKey
+): ProjectScopedReadMemory<TItem>[] {
+  const sessionContext = getSessionContext(sessionId);
+  const value = sessionContext?.memory_json[key];
+  return Array.isArray(value) ? (value as ProjectScopedReadMemory<TItem>[]) : [];
+}
+
+function updateProjectScopedReadMemory<TItem extends ProjectScopedReadItemBase>(
+  sessionId: string,
+  key: ProjectScopedReadMemoryKey,
+  result: ProjectScopedReadToolResult<TItem>,
+  projectName?: string
+): void {
+  const current = getSessionContext(sessionId);
+  const existing = getProjectScopedReadMemory<TItem>(sessionId, key).filter(
+    (snapshot) => snapshot.projectId !== result.projectId
+  );
+  const nextSnapshots: ProjectScopedReadMemory<TItem>[] = [
+    {
+      ...result,
+      ...(projectName ? { projectName } : {}),
+      fetchedAt: new Date().toISOString()
+    },
+    ...existing
+  ].slice(0, MAX_RECENT_PROJECT_SCOPED_SNAPSHOTS);
+
+  upsertSessionContext(sessionId, {
+    current_account_id: env.apsAccountId,
+    memory_json: {
+      ...current?.memory_json,
+      [key]: nextSnapshots
+    }
+  });
+}
+
+function getRecentProjectScopedReadByProjectId<TItem extends ProjectScopedReadItemBase>(
+  sessionId: string,
+  key: ProjectScopedReadMemoryKey,
+  projectId: string
+): ProjectScopedReadMemory<TItem> | undefined {
+  return getProjectScopedReadMemory<TItem>(sessionId, key).find(
+    (snapshot) => snapshot.projectId === projectId.replace(/^b\./, '')
+  );
+}
+
+function getPreferredProjectScopedReadMemory<TItem extends ProjectScopedReadItemBase>(
+  sessionId: string,
+  key: ProjectScopedReadMemoryKey
+): ProjectScopedReadMemory<TItem> | undefined {
+  const sessionContext = getSessionContext(sessionId);
+  const recentSnapshots = getProjectScopedReadMemory<TItem>(sessionId, key);
+  const currentProjectId = sessionContext?.current_project_id;
+  if (currentProjectId) {
+    const currentSnapshot = recentSnapshots.find((snapshot) => snapshot.projectId === currentProjectId);
+    if (currentSnapshot) {
+      return currentSnapshot;
+    }
+  }
+
+  const lastResolvedProjectId = sessionContext?.memory_json.lastResolvedProjectId;
+  if (lastResolvedProjectId) {
+    const lastResolvedSnapshot = recentSnapshots.find(
+      (snapshot) => snapshot.projectId === lastResolvedProjectId
+    );
+    if (lastResolvedSnapshot) {
+      return lastResolvedSnapshot;
+    }
+  }
+
+  return recentSnapshots[0];
 }
 
 async function resolveProjectId(
@@ -581,17 +1023,17 @@ async function maybeResolveToolArguments(
   projects: ApsProject[];
   resolvedProjectName?: string;
 }> {
-  if (toolRequest.name !== 'get_project_users') {
+  if (!PROJECT_SCOPED_TOOL_NAMES.has(toolRequest.name)) {
     return {
       args: toolRequest.arguments,
       projects: cachedProjects
     };
   }
 
-  const currentArgs = toolRequest.arguments as GetProjectUsersToolArgs;
+  const currentArgs = toolRequest.arguments as { projectId?: string };
   const projectIdOrName = currentArgs.projectId?.trim();
   if (!projectIdOrName) {
-    throw new Error('get_project_users requiere projectId');
+    throw new Error(`${toolRequest.name} requiere projectId`);
   }
 
   const resolved = await resolveProjectId(projectIdOrName, cachedProjects);
@@ -606,6 +1048,22 @@ async function maybeResolveToolArguments(
 }
 
 function inferIntentFromToolChain(toolChain: PlannedToolCall[]): AgentIntent {
+  if (toolChain.some((step) => step.name === 'get_project_transmittals')) {
+    return 'list_transmittals';
+  }
+
+  if (toolChain.some((step) => step.name === 'get_project_submittals')) {
+    return 'list_submittals';
+  }
+
+  if (toolChain.some((step) => step.name === 'get_project_rfis')) {
+    return 'list_rfis';
+  }
+
+  if (toolChain.some((step) => step.name === 'get_project_issues')) {
+    return 'list_issues';
+  }
+
   if (toolChain.some((step) => step.name === 'get_project_users')) {
     return 'get_project_users';
   }
@@ -676,24 +1134,70 @@ function normalizeTurnPlan(raw: unknown): StructuredTurnPlan | undefined {
 
   let requiresTools =
     getBoolean(raw.requiresTools) ??
-    (mode === 'operate' && (intent === 'list_projects' || intent === 'get_project_users'));
+    (mode === 'operate' &&
+      [
+        'list_projects',
+        'get_project_users',
+        'list_issues',
+        'list_rfis',
+        'list_submittals',
+        'list_transmittals'
+      ].includes(intent));
   let needsClarification = getBoolean(raw.needsClarification) ?? false;
   let clarificationQuestion = getTrimmedString(raw.clarificationQuestion);
 
   if (intent === 'list_projects') {
     mode = 'operate';
     domain = 'acc_admin';
-    requiresTools = true;
   }
 
   if (intent === 'get_project_users') {
     mode = 'operate';
     domain = 'acc_admin';
-    requiresTools = true;
 
     if (!entities.projectId && !entities.projectName && !entities.useCurrentProject) {
       needsClarification = true;
       clarificationQuestion ??= '¿De qué proyecto quieres que obtenga los usuarios?';
+    }
+  }
+
+  if (intent === 'list_issues') {
+    mode = 'operate';
+    domain = 'issues';
+
+    if (!entities.projectId && !entities.projectName && !entities.useCurrentProject) {
+      needsClarification = true;
+      clarificationQuestion ??= '¿De qué proyecto quieres que consulte los issues?';
+    }
+  }
+
+  if (intent === 'list_rfis') {
+    mode = 'operate';
+    domain = 'rfis';
+
+    if (!entities.projectId && !entities.projectName && !entities.useCurrentProject) {
+      needsClarification = true;
+      clarificationQuestion ??= '¿De qué proyecto quieres que consulte los RFIs?';
+    }
+  }
+
+  if (intent === 'list_submittals') {
+    mode = 'operate';
+    domain = 'submittals';
+
+    if (!entities.projectId && !entities.projectName && !entities.useCurrentProject) {
+      needsClarification = true;
+      clarificationQuestion ??= '¿De qué proyecto quieres que consulte los submittals?';
+    }
+  }
+
+  if (intent === 'list_transmittals') {
+    mode = 'operate';
+    domain = 'transmittals';
+
+    if (!entities.projectId && !entities.projectName && !entities.useCurrentProject) {
+      needsClarification = true;
+      clarificationQuestion ??= '¿De qué proyecto quieres que consulte los transmittals?';
     }
   }
 
@@ -716,6 +1220,14 @@ function normalizeTurnPlan(raw: unknown): StructuredTurnPlan | undefined {
     clarificationQuestion =
       intent === 'get_project_users'
         ? '¿De qué proyecto quieres que obtenga los usuarios?'
+        : intent === 'list_issues'
+          ? '¿De qué proyecto quieres que consulte los issues?'
+          : intent === 'list_rfis'
+            ? '¿De qué proyecto quieres que consulte los RFIs?'
+            : intent === 'list_submittals'
+              ? '¿De qué proyecto quieres que consulte los submittals?'
+              : intent === 'list_transmittals'
+                ? '¿De qué proyecto quieres que consulte los transmittals?'
         : '¿Qué dato de ACC quieres consultar?';
   }
 
@@ -730,6 +1242,14 @@ function normalizeTurnPlan(raw: unknown): StructuredTurnPlan | undefined {
         ? [{ name: 'get_projects_by_account', arguments: {} }]
         : intent === 'get_project_users'
           ? [{ name: 'get_project_users', arguments: {} }]
+          : intent === 'list_issues'
+            ? [{ name: 'get_project_issues', arguments: {} }]
+            : intent === 'list_rfis'
+              ? [{ name: 'get_project_rfis', arguments: {} }]
+              : intent === 'list_submittals'
+                ? [{ name: 'get_project_submittals', arguments: {} }]
+                : intent === 'list_transmittals'
+                  ? [{ name: 'get_project_transmittals', arguments: {} }]
           : [];
 
   return {
@@ -802,6 +1322,38 @@ function isGetProjectUsersToolResult(payload: unknown): payload is GetProjectUse
   );
 }
 
+function isProjectScopedReadToolResult<TItem>(
+  payload: unknown
+): payload is ProjectScopedReadToolResult<TItem> {
+  return (
+    isRecord(payload) &&
+    typeof payload.projectId === 'string' &&
+    typeof payload.total === 'number' &&
+    typeof payload.source === 'string' &&
+    Array.isArray(payload.items)
+  );
+}
+
+function isGetProjectIssuesToolResult(payload: unknown): payload is GetProjectIssuesToolResult {
+  return isProjectScopedReadToolResult(payload);
+}
+
+function isGetProjectRfisToolResult(payload: unknown): payload is GetProjectRfisToolResult {
+  return isProjectScopedReadToolResult(payload);
+}
+
+function isGetProjectSubmittalsToolResult(
+  payload: unknown
+): payload is GetProjectSubmittalsToolResult {
+  return isProjectScopedReadToolResult(payload);
+}
+
+function isGetProjectTransmittalsToolResult(
+  payload: unknown
+): payload is GetProjectTransmittalsToolResult {
+  return isProjectScopedReadToolResult(payload);
+}
+
 function formatProjectsResponse(result: GetProjectsToolResult): string {
   const lines = [
     result.count === 0
@@ -862,6 +1414,75 @@ function formatUsersResponse(
   return lines.join('\n');
 }
 
+function formatProjectScopedReadLine(
+  item: ProjectScopedReadItemBase & Record<string, unknown>
+): string {
+  const parts = [item.id];
+  if (typeof item.title === 'string' && item.title.trim()) {
+    parts.push(item.title);
+  }
+  if (typeof item.status === 'string' && item.status.trim()) {
+    parts.push(item.status);
+  }
+
+  const detailFields = ['type', 'assignedTo', 'location', 'response', 'spec', 'manager', 'createdBy', 'dueDate'];
+  for (const field of detailFields) {
+    const value = item[field];
+    if (typeof value === 'string' && value.trim()) {
+      parts.push(value);
+    }
+  }
+
+  return `- ${parts.join(' | ')}`;
+}
+
+function formatProjectScopedReadResponse<TItem extends ProjectScopedReadItemBase & Record<string, unknown>>(
+  label: string,
+  result: ProjectScopedReadToolResult<TItem>,
+  projectName?: string
+): string {
+  const projectLabel = projectName ? `${projectName} (${result.projectId})` : result.projectId;
+  const lines = [
+    result.total === 0
+      ? `No encontré ${label} para el proyecto ${projectLabel}.`
+      : `Encontré ${result.total} ${label} en el proyecto ${projectLabel}.`
+  ];
+
+  if (result.items.length > 0) {
+    lines.push('');
+    lines.push(...result.items.map((item) => formatProjectScopedReadLine(item)));
+  }
+
+  if (result.warning) {
+    lines.push('');
+    lines.push(`Aviso: ${result.warning}`);
+  }
+
+  return lines.join('\n');
+}
+
+function formatIssuesResponse(result: GetProjectIssuesToolResult, projectName?: string): string {
+  return formatProjectScopedReadResponse('issues', result, projectName);
+}
+
+function formatRfisResponse(result: GetProjectRfisToolResult, projectName?: string): string {
+  return formatProjectScopedReadResponse('RFIs', result, projectName);
+}
+
+function formatSubmittalsResponse(
+  result: GetProjectSubmittalsToolResult,
+  projectName?: string
+): string {
+  return formatProjectScopedReadResponse('submittals', result, projectName);
+}
+
+function formatTransmittalsResponse(
+  result: GetProjectTransmittalsToolResult,
+  projectName?: string
+): string {
+  return formatProjectScopedReadResponse('transmittals', result, projectName);
+}
+
 function formatProjectsFailure(error: string): string {
   return `No pude listar los proyectos del hub. Falló el paso get_projects_by_account: ${error}`;
 }
@@ -876,6 +1497,18 @@ function formatProjectUsersFailure(
   return `No pude obtener los usuarios del proyecto ${projectLabel}. Falló el paso get_project_users: ${error}`;
 }
 
+function formatProjectScopedReadFailure(
+  label: string,
+  toolName: ToolName,
+  error: string,
+  projectId?: string,
+  projectName?: string
+): string {
+  const projectLabel =
+    projectName && projectId ? `${projectName} (${projectId})` : projectName ?? projectId ?? 'solicitado';
+  return `No pude obtener ${label} del proyecto ${projectLabel}. Falló el paso ${toolName}: ${error}`;
+}
+
 function formatProjectResolutionQuestion(projectReference: string, matches?: ApsProject[]): string {
   if (matches?.length) {
     return `Encontré varios proyectos que podrían coincidir con "${projectReference}": ${matches.map((project) => project.name).join(', ')}. ¿Cuál quieres usar?`;
@@ -883,6 +1516,84 @@ function formatProjectResolutionQuestion(projectReference: string, matches?: Aps
 
   return `No pude resolver un projectId confiable para "${projectReference}". Si quieres, indícame el nombre exacto del proyecto o el projectId.`;
 }
+
+const PROJECT_SCOPED_READ_CONFIGS: ProjectScopedReadConfig<
+  | GetProjectIssuesToolArgs
+  | GetProjectRfisToolArgs
+  | GetProjectSubmittalsToolArgs
+  | GetProjectTransmittalsToolArgs,
+  | GetProjectIssuesToolResult
+  | GetProjectRfisToolResult
+  | GetProjectSubmittalsToolResult
+  | GetProjectTransmittalsToolResult
+>[] = [
+  {
+    intent: 'list_issues',
+    toolName: 'get_project_issues',
+    domain: 'issues',
+    memoryKey: 'recentIssues',
+    missingProjectQuestion: '¿De qué proyecto quieres que consulte los issues?',
+    formatSuccess: (result, projectName) =>
+      formatIssuesResponse(result as GetProjectIssuesToolResult, projectName),
+    formatFailure: (error, projectId, projectName) =>
+      formatProjectScopedReadFailure(
+        'los issues',
+        'get_project_issues',
+        error,
+        projectId,
+        projectName
+      ),
+    isResult: isGetProjectIssuesToolResult
+  },
+  {
+    intent: 'list_rfis',
+    toolName: 'get_project_rfis',
+    domain: 'rfis',
+    memoryKey: 'recentRfis',
+    missingProjectQuestion: '¿De qué proyecto quieres que consulte los RFIs?',
+    formatSuccess: (result, projectName) =>
+      formatRfisResponse(result as GetProjectRfisToolResult, projectName),
+    formatFailure: (error, projectId, projectName) =>
+      formatProjectScopedReadFailure('los RFIs', 'get_project_rfis', error, projectId, projectName),
+    isResult: isGetProjectRfisToolResult
+  },
+  {
+    intent: 'list_submittals',
+    toolName: 'get_project_submittals',
+    domain: 'submittals',
+    memoryKey: 'recentSubmittals',
+    missingProjectQuestion: '¿De qué proyecto quieres que consulte los submittals?',
+    formatSuccess: (result, projectName) =>
+      formatSubmittalsResponse(result as GetProjectSubmittalsToolResult, projectName),
+    formatFailure: (error, projectId, projectName) =>
+      formatProjectScopedReadFailure(
+        'los submittals',
+        'get_project_submittals',
+        error,
+        projectId,
+        projectName
+      ),
+    isResult: isGetProjectSubmittalsToolResult
+  },
+  {
+    intent: 'list_transmittals',
+    toolName: 'get_project_transmittals',
+    domain: 'transmittals',
+    memoryKey: 'recentTransmittals',
+    missingProjectQuestion: '¿De qué proyecto quieres que consulte los transmittals?',
+    formatSuccess: (result, projectName) =>
+      formatTransmittalsResponse(result as GetProjectTransmittalsToolResult, projectName),
+    formatFailure: (error, projectId, projectName) =>
+      formatProjectScopedReadFailure(
+        'los transmittals',
+        'get_project_transmittals',
+        error,
+        projectId,
+        projectName
+      ),
+    isResult: isGetProjectTransmittalsToolResult
+  }
+];
 
 async function runDirectConversation(
   sessionId: string,
@@ -935,6 +1646,42 @@ async function executeToolRequest(
       );
     }
 
+    if (
+      PROJECT_SCOPED_READ_TOOL_NAMES.has(toolRequest.name) &&
+      isProjectScopedReadToolResult<ProjectScopedReadItemBase>(toolResult)
+    ) {
+      updateProjectSelectionMemory(
+        sessionId,
+        toolResult.projectId.replace(/^b\./, ''),
+        resolved.resolvedProjectName
+      );
+
+      const memoryKeyByToolName: Record<
+        Extract<ToolName, 'get_project_issues' | 'get_project_rfis' | 'get_project_submittals' | 'get_project_transmittals'>,
+        ProjectScopedReadMemoryKey
+      > = {
+        get_project_issues: 'recentIssues',
+        get_project_rfis: 'recentRfis',
+        get_project_submittals: 'recentSubmittals',
+        get_project_transmittals: 'recentTransmittals'
+      };
+
+      updateProjectScopedReadMemory(
+        sessionId,
+        memoryKeyByToolName[
+          toolRequest.name as Extract<
+            ToolName,
+            | 'get_project_issues'
+            | 'get_project_rfis'
+            | 'get_project_submittals'
+            | 'get_project_transmittals'
+          >
+        ],
+        toolResult,
+        resolved.resolvedProjectName
+      );
+    }
+
     return {
       ok: true,
       name: toolRequest.name,
@@ -974,12 +1721,13 @@ async function callToolAndTrack(
   return executeToolRequest(sessionId, toolRequest, cachedProjects, options);
 }
 
-async function resolveProjectForUsers(
+async function resolveProjectForScopedTool(
   sessionId: string,
   plan: StructuredTurnPlan,
   cachedProjects: ApsProject[],
   usedTools: string[],
-  options: AgentOptions
+  options: AgentOptions,
+  missingProjectQuestion: string
 ): Promise<ProjectResolution> {
   const sessionContext = getSessionContext(sessionId);
   const reliableCurrentProject =
@@ -1051,19 +1799,20 @@ async function resolveProjectForUsers(
   if (!requestedProjectName) {
     return {
       status: 'clarification',
-      question: '¿De qué proyecto quieres que obtenga los usuarios?',
+      question: missingProjectQuestion,
       projects: cachedProjects
     };
   }
 
-  const contextProjects: ApsProject[] = [
+  const contextProjects: ApsProject[] = dedupeProjects([
+    ...getProjectsFromMemory(sessionId),
     ...(reliableCurrentProject
       ? [{ id: reliableCurrentProject.id, name: reliableCurrentProject.name ?? reliableCurrentProject.id }]
       : []),
     ...(lastResolvedProject
       ? [{ id: lastResolvedProject.id, name: lastResolvedProject.name ?? lastResolvedProject.id }]
       : [])
-  ];
+  ]);
   const contextMatch = findProjectMatch(contextProjects, requestedProjectName);
   if (contextMatch.project) {
     updateProjectSelectionMemory(sessionId, contextMatch.project.id, contextMatch.project.name);
@@ -1150,14 +1899,427 @@ async function resolveProjectForUsers(
   };
 }
 
+async function resolveProjectForUsers(
+  sessionId: string,
+  plan: StructuredTurnPlan,
+  cachedProjects: ApsProject[],
+  usedTools: string[],
+  options: AgentOptions
+): Promise<ProjectResolution> {
+  return resolveProjectForScopedTool(
+    sessionId,
+    plan,
+    cachedProjects,
+    usedTools,
+    options,
+    '¿De qué proyecto quieres que obtenga los usuarios?'
+  );
+}
+
+async function ensureProjectsAvailable(
+  sessionId: string,
+  plan: StructuredTurnPlan,
+  cachedProjects: ApsProject[],
+  usedTools: string[],
+  options: AgentOptions
+): Promise<
+  | {
+      ok: true;
+      projects: ApsProject[];
+    }
+  | {
+      ok: false;
+      error: string;
+      projects: ApsProject[];
+    }
+> {
+  const localProjects = getProjectsFromOperationalSources(sessionId, cachedProjects);
+  if (localProjects.length > 0) {
+    return {
+      ok: true,
+      projects: localProjects
+    };
+  }
+
+  const projectsLookup = await callToolAndTrack(
+    sessionId,
+    {
+      name: 'get_projects_by_account',
+      arguments: {
+        ...(plan.entities.actingUserId ? { actingUserId: plan.entities.actingUserId } : {})
+      }
+    },
+    localProjects,
+    usedTools,
+    options
+  );
+
+  if (!projectsLookup.ok) {
+    return {
+      ok: false,
+      error: projectsLookup.error,
+      projects: projectsLookup.projects
+    };
+  }
+
+  return {
+    ok: true,
+    projects: projectsLookup.projects
+  };
+}
+
+async function maybeHandleRuntimeProjectQuery(
+  sessionId: string,
+  userText: string,
+  plan: StructuredTurnPlan,
+  cachedProjects: ApsProject[],
+  usedTools: string[],
+  options: AgentOptions,
+  planningResponse?: ChatResponse
+): Promise<AgentResult | undefined> {
+  const runtimeQuery = analyzeRuntimeProjectQuery(userText, plan);
+  const shouldHandle =
+    runtimeQuery.isCompound ||
+    runtimeQuery.wantsStatusCounts ||
+    runtimeQuery.wantsPrefixFilter ||
+    runtimeQuery.wantsUserCompanyCounts ||
+    runtimeQuery.wantsProjectUsers ||
+    (plan.intent === 'list_projects' && !plan.requiresTools);
+
+  if (!shouldHandle) {
+    return undefined;
+  }
+
+  const sections: string[] = [];
+  let localProjects = getProjectsFromOperationalSources(sessionId, cachedProjects);
+  const needsProjectsData =
+    runtimeQuery.wantsProjectList ||
+    runtimeQuery.wantsStatusCounts ||
+    runtimeQuery.wantsPrefixFilter ||
+    Boolean(runtimeQuery.projectReference) ||
+    (runtimeQuery.wantsProjectUsers && !plan.entities.useCurrentProject);
+
+  if (needsProjectsData && localProjects.length === 0) {
+    const ensuredProjects = await ensureProjectsAvailable(
+      sessionId,
+      plan,
+      localProjects,
+      usedTools,
+      options
+    );
+
+    if (!ensuredProjects.ok) {
+      return finalizeAgentResult(
+        sessionId,
+        formatProjectsFailure(ensuredProjects.error),
+        usedTools,
+        planningResponse
+      );
+    }
+
+    localProjects = ensuredProjects.projects;
+  }
+
+  if (runtimeQuery.wantsProjectList && localProjects.length > 0) {
+    sections.push(formatProjectListSection(localProjects));
+  }
+
+  if (runtimeQuery.wantsStatusCounts) {
+    if (localProjects.length === 0) {
+      return finalizeAgentResult(
+        sessionId,
+        'Necesito una lista confiable de proyectos para contar activos y archivados.',
+        usedTools,
+        planningResponse
+      );
+    }
+
+    sections.push(formatProjectStatusCountsSection(localProjects));
+  }
+
+  if (runtimeQuery.wantsPrefixFilter) {
+    if (localProjects.length === 0 || !runtimeQuery.prefix) {
+      return finalizeAgentResult(
+        sessionId,
+        'Necesito una lista confiable de proyectos y un prefijo claro para filtrar.',
+        usedTools,
+        planningResponse
+      );
+    }
+
+    sections.push(
+      formatProjectPrefixSection(
+        runtimeQuery.prefix,
+        filterProjectsByPrefix(localProjects, runtimeQuery.prefix)
+      )
+    );
+  }
+
+  const shouldFetchUsers =
+    runtimeQuery.wantsProjectUsers ||
+    (runtimeQuery.wantsUserCompanyCounts &&
+      (Boolean(runtimeQuery.projectReference) || plan.entities.useCurrentProject === true));
+
+  if (shouldFetchUsers) {
+    const effectivePlan: StructuredTurnPlan =
+      runtimeQuery.projectReference && !plan.entities.projectId && !plan.entities.projectName
+        ? {
+            ...plan,
+            mode: 'operate',
+            domain: 'acc_admin',
+            intent: 'get_project_users',
+            requiresTools: true,
+            needsClarification: false,
+            entities: {
+              ...plan.entities,
+              projectName: runtimeQuery.projectReference
+            }
+          }
+        : {
+            ...plan,
+            mode: 'operate',
+            domain: 'acc_admin',
+            intent: 'get_project_users',
+            requiresTools: true,
+            needsClarification: false
+          };
+
+    const projectResolution = await resolveProjectForUsers(
+      sessionId,
+      effectivePlan,
+      localProjects,
+      usedTools,
+      options
+    );
+    localProjects = projectResolution.projects;
+
+    if (projectResolution.status === 'clarification') {
+      if (sections.length > 0) {
+        sections.push(projectResolution.question);
+        return finalizeAgentResult(sessionId, sections.join('\n\n'), usedTools, planningResponse);
+      }
+
+      return finalizeAgentResult(
+        sessionId,
+        projectResolution.question,
+        usedTools,
+        planningResponse
+      );
+    }
+
+    if (projectResolution.status === 'error') {
+      if (sections.length > 0) {
+        sections.push(projectResolution.error);
+        return finalizeAgentResult(sessionId, sections.join('\n\n'), usedTools, planningResponse);
+      }
+
+      return finalizeAgentResult(
+        sessionId,
+        projectResolution.error,
+        usedTools,
+        planningResponse
+      );
+    }
+
+    const usersResult = await callToolAndTrack(
+      sessionId,
+      {
+        name: 'get_project_users',
+        arguments: {
+          projectId: projectResolution.projectId,
+          ...(plan.entities.products ? { products: plan.entities.products } : {}),
+          ...(plan.entities.region ? { region: plan.entities.region } : {}),
+          ...(plan.entities.actingUserId ? { actingUserId: plan.entities.actingUserId } : {})
+        }
+      },
+      localProjects,
+      usedTools,
+      options
+    );
+
+    if (!usersResult.ok) {
+      const failure = formatProjectUsersFailure(
+        usersResult.error,
+        projectResolution.projectId,
+        projectResolution.projectName
+      );
+
+      if (sections.length > 0) {
+        sections.push(failure);
+        return finalizeAgentResult(sessionId, sections.join('\n\n'), usedTools, planningResponse);
+      }
+
+      return finalizeAgentResult(sessionId, failure, usedTools, planningResponse);
+    }
+
+    if (!isGetProjectUsersToolResult(usersResult.payload)) {
+      const failure =
+        'No pude formatear el resultado de get_project_users porque la tool devolvió un payload inesperado.';
+
+      if (sections.length > 0) {
+        sections.push(failure);
+        return finalizeAgentResult(sessionId, sections.join('\n\n'), usedTools, planningResponse);
+      }
+
+      return finalizeAgentResult(sessionId, failure, usedTools, planningResponse);
+    }
+
+    if (runtimeQuery.wantsProjectUsers) {
+      sections.push(
+        formatUsersResponse(
+          usersResult.payload,
+          projectResolution.projectName ?? usersResult.resolvedProjectName
+        )
+      );
+    }
+
+    if (runtimeQuery.wantsUserCompanyCounts) {
+      const freshUsers =
+        getFreshUsersFromCache(projectResolution.projectId, USERS_CACHE_TTL_MS) ??
+        usersResult.payload.users;
+      const projectLabel =
+        projectResolution.projectName ??
+        usersResult.resolvedProjectName ??
+        projectResolution.projectId;
+      sections.push(formatUserCompanyCountsSection(projectLabel, freshUsers));
+    }
+  } else if (runtimeQuery.wantsUserCompanyCounts) {
+    const cachedUsers = getFreshUsersForSessionProject(sessionId);
+    if (!cachedUsers) {
+      return finalizeAgentResult(
+        sessionId,
+        'Necesito una lista reciente de usuarios de un proyecto para contarlos por empresa.',
+        usedTools,
+        planningResponse
+      );
+    }
+
+    const projectLabel =
+      cachedUsers.projectName ?? cachedUsers.projectId;
+    sections.push(formatUserCompanyCountsSection(projectLabel, cachedUsers.users));
+  }
+
+  if (sections.length === 0) {
+    return undefined;
+  }
+
+  return finalizeAgentResult(sessionId, sections.join('\n\n'), usedTools, planningResponse);
+}
+
+async function executeProjectScopedReadIntent<
+  TArgs extends { projectId: string },
+  TResult extends ProjectScopedReadToolResult<ProjectScopedReadItemBase>
+>(
+  sessionId: string,
+  plan: StructuredTurnPlan,
+  cachedProjects: ApsProject[],
+  usedTools: string[],
+  options: AgentOptions,
+  planningResponse: ChatResponse | undefined,
+  config: ProjectScopedReadConfig<TArgs, TResult>
+): Promise<AgentResult> {
+  const projectResolution = await resolveProjectForScopedTool(
+    sessionId,
+    plan,
+    cachedProjects,
+    usedTools,
+    options,
+    config.missingProjectQuestion
+  );
+
+  if (projectResolution.status === 'clarification') {
+    return finalizeAgentResult(sessionId, projectResolution.question, usedTools, planningResponse);
+  }
+
+  if (projectResolution.status === 'error') {
+    return finalizeAgentResult(sessionId, projectResolution.error, usedTools, planningResponse);
+  }
+
+  const recentResult = getRecentProjectScopedReadByProjectId<ProjectScopedReadItemBase>(
+    sessionId,
+    config.memoryKey,
+    projectResolution.projectId
+  );
+  if (!plan.requiresTools && recentResult) {
+    return finalizeAgentResult(
+      sessionId,
+      config.formatSuccess(
+        recentResult as unknown as TResult,
+        projectResolution.projectName ?? recentResult.projectName
+      ),
+      usedTools,
+      planningResponse
+    );
+  }
+
+  const toolResult = await callToolAndTrack(
+    sessionId,
+    {
+      name: config.toolName,
+      arguments: {
+        projectId: projectResolution.projectId
+      }
+    },
+    projectResolution.projects,
+    usedTools,
+    options
+  );
+
+  if (!toolResult.ok) {
+    return finalizeAgentResult(
+      sessionId,
+      config.formatFailure(
+        toolResult.error,
+        projectResolution.projectId,
+        projectResolution.projectName
+      ),
+      usedTools,
+      planningResponse
+    );
+  }
+
+  if (!config.isResult(toolResult.payload)) {
+    return finalizeAgentResult(
+      sessionId,
+      `No pude formatear el resultado de ${config.toolName} porque la tool devolvió un payload inesperado.`,
+      usedTools,
+      planningResponse
+    );
+  }
+
+  return finalizeAgentResult(
+    sessionId,
+    config.formatSuccess(
+      toolResult.payload,
+      projectResolution.projectName ?? toolResult.resolvedProjectName
+    ),
+    usedTools,
+    planningResponse
+  );
+}
+
 async function executeOperationalPlan(
   sessionId: string,
+  userText: string,
   plan: StructuredTurnPlan,
   options: AgentOptions,
   planningResponse?: ChatResponse
 ): Promise<AgentResult> {
   const usedTools: string[] = [];
   let cachedProjects = getFreshProjectsFromCache(env.apsAccountId, PROJECTS_CACHE_TTL_MS) ?? [];
+
+  const runtimeQueryResult = await maybeHandleRuntimeProjectQuery(
+    sessionId,
+    userText,
+    plan,
+    cachedProjects,
+    usedTools,
+    options,
+    planningResponse
+  );
+  if (runtimeQueryResult) {
+    return runtimeQueryResult;
+  }
 
   if (plan.intent === 'list_projects') {
     const projectsResult = await callToolAndTrack(
@@ -1277,6 +2439,22 @@ async function executeOperationalPlan(
     );
   }
 
+  const readConfig = PROJECT_SCOPED_READ_CONFIGS.find((config) => config.intent === plan.intent);
+  if (readConfig) {
+    return executeProjectScopedReadIntent(
+      sessionId,
+      plan,
+      cachedProjects,
+      usedTools,
+      options,
+      planningResponse,
+      readConfig as ProjectScopedReadConfig<
+        { projectId: string },
+        ProjectScopedReadToolResult<ProjectScopedReadItemBase>
+      >
+    );
+  }
+
   return finalizeAgentResult(
     sessionId,
     plan.clarificationQuestion ?? 'Necesito un poco más de contexto para ejecutar esa operación ACC.',
@@ -1355,26 +2533,63 @@ export async function runAgent(
     current_account_id: env.apsAccountId
   });
 
-  try {
-    const { plan, raw } = await interpretTurn(sessionId);
+  let plan: StructuredTurnPlan | undefined;
+  let planningResponse: ChatResponse | undefined;
 
-    if (plan.needsClarification) {
+  try {
+    const interpreted = await interpretTurn(sessionId);
+    plan = interpreted.plan;
+    planningResponse = interpreted.raw;
+    const runtimeQuery = analyzeRuntimeProjectQuery(userText, plan);
+    const hasProjectContext = getProjectsFromOperationalSources(sessionId, []).length > 0;
+    const hasUserContext = Boolean(getFreshUsersForSessionProject(sessionId));
+    const hasProjectScopedReadContext = Boolean(
+      getPreferredProjectScopedReadMemory(sessionId, 'recentIssues') ??
+        getPreferredProjectScopedReadMemory(sessionId, 'recentRfis') ??
+        getPreferredProjectScopedReadMemory(sessionId, 'recentSubmittals') ??
+        getPreferredProjectScopedReadMemory(sessionId, 'recentTransmittals')
+    );
+    const shouldHandleAsAccOperation =
+      (plan.mode !== 'chat' && plan.domain !== 'unknown' && plan.intent !== 'unknown') ||
+      ((runtimeQuery.isCompound ||
+        runtimeQuery.wantsStatusCounts ||
+        runtimeQuery.wantsPrefixFilter ||
+        runtimeQuery.wantsProjectUsers ||
+        runtimeQuery.wantsUserCompanyCounts) &&
+        (hasProjectContext || hasUserContext || hasProjectScopedReadContext));
+
+    if (plan.needsClarification && !shouldHandleAsAccOperation) {
       return finalizeAgentResult(
         sessionId,
         plan.clarificationQuestion ?? 'Necesito una aclaración para continuar.',
         [],
-        raw
+        planningResponse
       );
     }
 
-    if (plan.mode === 'chat' || !plan.requiresTools || plan.domain !== 'acc_admin') {
+    if (plan.mode === 'chat' && !shouldHandleAsAccOperation) {
       return runDirectConversation(sessionId, plan.mode !== 'chat');
     }
 
-    return executeOperationalPlan(sessionId, plan, options, raw);
+    if (!shouldHandleAsAccOperation) {
+      return runDirectConversation(sessionId, plan.mode !== 'chat');
+    }
+
+    return executeOperationalPlan(sessionId, userText, plan, options, planningResponse);
   } catch (error) {
     const errorMessage =
       error instanceof Error ? error.message : 'Fallo la planificación estructurada del turno';
+
+    if (plan?.mode === 'chat' && plan.requiresTools === false) {
+      console.warn(`[agent] Se omite fallback libre para chat sin tools: ${errorMessage}`);
+      return finalizeAgentResult(
+        sessionId,
+        'No pude responder este turno por un error interno al generar la respuesta.',
+        [],
+        planningResponse
+      );
+    }
+
     console.warn(`[agent] Fallback a tool-calling libre: ${errorMessage}`);
     return runFreeformToolFallback(sessionId, options);
   }

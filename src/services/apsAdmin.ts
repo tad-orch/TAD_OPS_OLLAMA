@@ -11,6 +11,26 @@ import type {
 } from '../types/aps.js';
 import { fetchAllOffsetPages } from '../utils/pagination.js';
 
+const APS_REGION_ALIASES: Record<string, string> = {
+  US: 'US',
+  EMEA: 'EMEA',
+  EU: 'EMEA',
+  AUS: 'AUS',
+  AU: 'AUS',
+  APAC: 'APAC',
+  GBR: 'GBR',
+  GB: 'GBR',
+  UK: 'GBR',
+  DEU: 'DEU',
+  DE: 'DEU',
+  JPN: 'JPN',
+  JP: 'JPN',
+  CAN: 'CAN',
+  CA: 'CAN',
+  IND: 'IND',
+  IN: 'IND'
+};
+
 function normalizeProjectsResponse(data: ApsProjectsResponse | ApsProject[]): ApsProject[] {
   if (Array.isArray(data)) {
     return data;
@@ -31,6 +51,32 @@ function normalizeProjectsPagination(
 
 function cleanProjectId(projectId: string): string {
   return projectId.replace(/^b\./, '');
+}
+
+function getNormalizedRegion(region?: string): string | undefined {
+  const trimmed = region?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  return APS_REGION_ALIASES[trimmed.toUpperCase()];
+}
+
+function sanitizeHeadersForLog(headers: Record<string, string>): Record<string, string> {
+  return {
+    ...(headers.Authorization ? { Authorization: 'Bearer [redacted]' } : {}),
+    ...(headers['User-Id'] ? { 'User-Id': headers['User-Id'] } : {}),
+    ...(headers.Region ? { Region: headers.Region } : {})
+  };
+}
+
+function getDeveloperMessage(data: unknown): string | undefined {
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+    return undefined;
+  }
+
+  const developerMessage = (data as { developerMessage?: unknown }).developerMessage;
+  return typeof developerMessage === 'string' ? developerMessage : undefined;
 }
 
 function normalizeProjectUsersResponse(data: ApsProjectUsersResponse): ApsProjectUser[] {
@@ -101,6 +147,20 @@ export async function getProjectUsers(
 ): Promise<ApsProjectUser[]> {
   const cleanedProjectId = cleanProjectId(projectId);
   const actingUserId = options.actingUserId ?? env.apsUserId;
+  const normalizedRegion = getNormalizedRegion(options.region);
+  const endpoint = `${env.apsBaseUrl}/construction/admin/v1/projects/${cleanedProjectId}/users`;
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    ...(actingUserId ? { 'User-Id': actingUserId } : {}),
+    ...(normalizedRegion ? { Region: normalizedRegion } : {})
+  };
+
+  if (options.region && !normalizedRegion) {
+    console.warn('[apsAdmin] Omitiendo Region inválido para listar usuarios del proyecto', {
+      projectId: cleanedProjectId,
+      requestedRegion: options.region
+    });
+  }
 
   console.log(`[apsAdmin] Listando usuarios del proyecto ${cleanedProjectId}`);
 
@@ -109,13 +169,9 @@ export async function getProjectUsers(
       initialLimit: options.limit ?? 100,
       fetchPage: async ({ limit, offset }) => {
         const response = await axios.get<ApsProjectUsersResponse>(
-          `${env.apsBaseUrl}/construction/admin/v1/projects/${cleanedProjectId}/users`,
+          endpoint,
           {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              ...(actingUserId ? { 'User-Id': actingUserId } : {}),
-              ...(options.region ? { Region: options.region } : {})
-            },
+            headers,
             params: {
               ...(options.products?.length ? { 'filter[products]': options.products.join(',') } : {}),
               limit,
@@ -135,8 +191,13 @@ export async function getProjectUsers(
   } catch (error) {
     const axiosError = error as AxiosError;
     console.error('[apsAdmin] Error listando usuarios del proyecto', {
+      endpoint,
       projectId: cleanedProjectId,
+      headers: sanitizeHeadersForLog(headers),
+      requestedRegion: options.region,
+      effectiveRegion: normalizedRegion,
       status: axiosError.response?.status,
+      developerMessage: getDeveloperMessage(axiosError.response?.data),
       data: axiosError.response?.data
     });
     throw error;

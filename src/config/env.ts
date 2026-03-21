@@ -16,15 +16,21 @@ function optional(name: string, fallback: string): string {
 
 function optionalInt(name: string): number | undefined {
   const raw = process.env[name]?.trim();
-  if (!raw) {
-    return undefined;
-  }
-
+  if (!raw) return undefined;
   const parsed = Number.parseInt(raw, 10);
   if (Number.isNaN(parsed)) {
     throw new Error(`La variable de entorno ${name} debe ser numérica`);
   }
+  return parsed;
+}
 
+function optionalFloat(name: string): number | undefined {
+  const raw = process.env[name]?.trim();
+  if (!raw) return undefined;
+  const parsed = Number.parseFloat(raw);
+  if (Number.isNaN(parsed)) {
+    throw new Error(`La variable de entorno ${name} debe ser numérica`);
+  }
   return parsed;
 }
 
@@ -34,6 +40,8 @@ export const env = {
   apsAccountId: required('APS_ACCOUNT_ID'),
   apsUserId: required('APS_USER_ID'),
   apsBaseUrl: required('APS_BASE_URL').replace(/\/+$/, ''),
-  ollamaModel: optional('OLLAMA_MODEL', 'qwen2.5-coder:14b'),
+  ollamaModel: optional('OLLAMA_MODEL', 'qwen3:14b'),
   ollamaContextLength: optionalInt('OLLAMA_CONTEXT_LENGTH'),
+  ollamaTemperature: optionalFloat('OLLAMA_TEMPERATURE'),
+  ollamaRepeatPenalty: optionalFloat('OLLAMA_REPEAT_PENALTY'),
 };

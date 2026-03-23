@@ -1,5 +1,6 @@
 import type { Tool } from 'ollama';
 import { getValidAccessToken } from '../../services/apsUserAuth.js';
+import { replaceProjectScopedReadCache } from '../../shared/storage/projectScopedReadCacheRepo.js';
 import type { GetProjectIssuesToolArgs, GetProjectIssuesToolResult } from '../../types/aps.js';
 import { summarizeProjectScopedReadForModel } from '../../utils/summarize.js';
 import { listProjectIssues } from './service.js';
@@ -43,6 +44,7 @@ export async function getProjectIssuesTool(
     ...(args.status?.trim() ? { status: args.status.trim() } : {}),
     ...(args.search?.trim() ? { search: args.search.trim() } : {})
   });
+  replaceProjectScopedReadCache('issue_cache', response.projectId, response.items);
 
   return summarizeProjectScopedReadForModel(
     response.projectId,

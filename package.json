@@ -5,8 +5,11 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "typecheck": "tsc --noEmit",
     "test:projects": "tsx src/scripts/testProjects.ts",
     "test:project-users": "tsx src/scripts/testProjectUsers.ts",
+    "test:dm-projects": "tsx src/scripts/testDmProjects.ts",
+    "test:auth-status": "tsx src/scripts/testAuthStatus.ts",
     "test:ollama-projects": "tsx src/scripts/testOllamaProjects.ts",
     "chat": "tsx src/app/chat.ts"
   },

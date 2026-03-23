@@ -28,6 +28,8 @@ export type ApsPagination = {
   totalResults?: number;
 };
 
+export type AuthMode = '2legged' | '3legged';
+
 export type ApsProjectUserProduct = {
   key: string;
   access?: string | undefined;
@@ -153,6 +155,42 @@ export type ProjectScopedReadToolResult<TItem> = {
   items: TItem[];
   source: string;
   warning?: string | undefined;
+};
+
+export type DmProject = {
+  id: string;
+  name: string;
+  projectType?: string | undefined;
+  projectStatus?: string | undefined;
+};
+
+export type GetDmProjectsToolArgs = {
+  hubId?: string;
+};
+
+export type GetDmProjectsToolResult = {
+  count: number;
+  hubId: string;
+  projects: DmProject[];
+  note?: string | undefined;
+};
+
+export type ProjectScopedCacheTable =
+  | 'issue_cache'
+  | 'rfi_cache'
+  | 'submittal_cache'
+  | 'transmittal_cache';
+
+export type AuthProfileMetadata = {
+  profileId: string;
+  displayName?: string | undefined;
+  email?: string | undefined;
+  authMode: AuthMode;
+  scopes: string[];
+  expiresAt?: string | undefined;
+  tokenStorePath: string;
+  isActive: boolean;
+  updatedAt: string;
 };
 
 export type GetProjectIssuesToolArgs = ProjectScopedReadToolArgs;

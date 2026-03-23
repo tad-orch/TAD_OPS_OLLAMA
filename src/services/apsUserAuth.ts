@@ -7,6 +7,12 @@ import { URL } from 'node:url';
 import axios from 'axios';
 import { AxiosError } from 'axios';
 import { env } from '../config/env.js';
+import { debugLog, errorLog, infoLog, redactPathForLog, warnLog } from '../shared/logging/logger.js';
+import {
+  clearAuthMetadata,
+  getTokenStoreMetadataKey,
+  syncAuthMetadata
+} from '../shared/storage/authMetadataRepo.js';
 
 type AuthProfile = {
   userId?: string | undefined;
@@ -110,6 +116,10 @@ function getStorePath(): string {
   return process.env.APS_USER_AUTH_STORAGE_PATH?.trim() || DEFAULT_STORE_PATH;
 }
 
+export function getAuthStorePath(): string {
+  return getStorePath();
+}
+
 function normalizeScopes(scopes: string[] = env.apsThreeLeggedScopes): string[] {
   const normalized = scopes.map((scope) => scope.trim()).filter(Boolean);
   return normalized.length > 0 ? [...new Set(normalized)] : [...env.apsThreeLeggedScopes];
@@ -190,12 +200,12 @@ function mapTokenResponseToStoredAuth(
   profile?: AuthProfile
 ): StoredUserAuth {
   if (!response.access_token) {
-    throw new Error('APS no devolvió access_token en la respuesta 3-legged');
+    throw new Error('APS no devolvio access_token en la respuesta 3-legged');
   }
 
   const refreshToken = response.refresh_token ?? refreshTokenFallback;
   if (!refreshToken) {
-    throw new Error('APS no devolvió refresh_token para la sesión 3-legged');
+    throw new Error('APS no devolvio refresh_token para la sesion 3-legged');
   }
 
   return {
@@ -330,8 +340,9 @@ export async function saveStoredAuth(auth: StoredUserAuth): Promise<void> {
     mode: 0o600
   });
   await rename(tempPath, storePath);
-  console.log('[apsUserAuth] Tokens 3-legged guardados', {
-    storePath,
+  await syncAuthMetadata(auth, storePath);
+  infoLog('apsUserAuth', 'Tokens 3-legged guardados', {
+    storePath: redactPathForLog(storePath),
     profileId: auth.profile?.userId,
     expiresAt: new Date(auth.expires_at).toISOString()
   });
@@ -339,8 +350,10 @@ export async function saveStoredAuth(auth: StoredUserAuth): Promise<void> {
 
 export async function clearStoredAuth(): Promise<void> {
   try {
-    await unlink(getStorePath());
-    console.log('[apsUserAuth] Tokens 3-legged eliminados');
+    const storePath = getStorePath();
+    await unlink(storePath);
+    await clearAuthMetadata(storePath, getTokenStoreMetadataKey(storePath));
+    infoLog('apsUserAuth', 'Tokens 3-legged eliminados');
   } catch {
     // ignore
   }
@@ -348,6 +361,10 @@ export async function clearStoredAuth(): Promise<void> {
 
 export async function getConstructionAuthStatus(): Promise<ConstructionAuthStatus> {
   const storedAuth = await loadStoredAuth();
+  if (storedAuth) {
+    await syncAuthMetadata(storedAuth, getStorePath());
+  }
+
   const displayName = storedAuth?.profile?.name ?? storedAuth?.profile?.email;
   const profileId = storedAuth?.profile?.userId ?? storedAuth?.profile?.email;
   const hasStoredAuth = Boolean(storedAuth?.refresh_token || storedAuth?.access_token);
@@ -364,19 +381,19 @@ export async function getConstructionAuthStatus(): Promise<ConstructionAuthStatu
     ...(displayName ? { displayName } : {}),
     ...(storedAuth ? { expiresAt: new Date(storedAuth.expires_at).toISOString() } : {}),
     message: readyForConstructionEndpoints
-      ? 'Hay autenticación ACC 3-legged disponible para endpoints de construcción.'
+      ? 'Hay autenticacion ACC 3-legged disponible para endpoints de construccion.'
       : pending
         ? 'Hay un login ACC 3-legged pendiente en el navegador.'
-        : 'No hay autenticación ACC 3-legged lista para endpoints de construcción.'
+        : 'No hay autenticacion ACC 3-legged lista para endpoints de construccion.'
   };
 }
 
 export async function getValidAccessToken(): Promise<string> {
   const storedAuth = await loadStoredAuth();
   if (!storedAuth) {
-    console.warn('[apsUserAuth] Falta autenticación 3-legged para endpoints de construcción');
+    warnLog('apsUserAuth', 'Falta autenticacion 3-legged para endpoints de construccion');
     throw new Error(
-      'Necesito autenticación ACC de usuario para consultar endpoints de construcción. Ejecuta start_acc_user_login.'
+      'Necesito autenticacion ACC de usuario para consultar endpoints de construccion. Ejecuta start_acc_user_login.'
     );
   }
 
@@ -384,7 +401,7 @@ export async function getValidAccessToken(): Promise<string> {
     return storedAuth.access_token;
   }
 
-  console.log('[apsUserAuth] Access token expirado; refrescando sesión 3-legged', {
+  infoLog('apsUserAuth', 'Access token expirado; refrescando sesion 3-legged', {
     profileId: storedAuth.profile?.userId
   });
 
@@ -401,18 +418,18 @@ export async function getValidAccessToken(): Promise<string> {
         ? { profile: refreshedAuth.profile ?? storedAuth.profile }
         : {})
     });
-    console.log('[apsUserAuth] Sesión 3-legged refrescada correctamente', {
+    infoLog('apsUserAuth', 'Sesion 3-legged refrescada correctamente', {
       profileId: refreshedAuth.profile?.userId ?? storedAuth.profile?.userId
     });
     return refreshedAuth.access_token;
   } catch (error) {
     const axiosError = error as AxiosError;
-    console.error('[apsUserAuth] Error refrescando sesión 3-legged', {
+    errorLog('apsUserAuth', 'Error refrescando sesion 3-legged', {
       status: axiosError.response?.status,
       data: axiosError.response?.data
     });
     throw new Error(
-      `No se pudo refrescar la autenticación ACC de usuario${axiosError.response?.status ? ` (HTTP ${axiosError.response.status})` : ''}. Ejecuta start_acc_user_login nuevamente.`
+      `No se pudo refrescar la autenticacion ACC de usuario${axiosError.response?.status ? ` (HTTP ${axiosError.response.status})` : ''}. Ejecuta start_acc_user_login nuevamente.`
     );
   }
 }
@@ -426,7 +443,7 @@ export async function startLogin(): Promise<StartLoginResult> {
       callbackUrl: env.apsThreeLeggedCallbackUrl,
       authorizationUrl: '',
       message:
-        'Ya hay autenticación ACC 3-legged disponible para endpoints de construcción.',
+        'Ya hay autenticacion ACC 3-legged disponible para endpoints de construccion.',
       ...(authStatus.profileId ? { profileId: authStatus.profileId } : {}),
       ...(authStatus.displayName ? { displayName: authStatus.displayName } : {})
     };
@@ -467,7 +484,7 @@ export async function startLogin(): Promise<StartLoginResult> {
       const returnedState = requestUrl.searchParams.get('state');
       const error = requestUrl.searchParams.get('error');
 
-      console.log('[apsUserAuth] Callback 3-legged recibido', {
+      debugLog('apsUserAuth', 'Callback 3-legged recibido', {
         path: requestUrl.pathname,
         state: returnedState ? getMaskedState(returnedState) : undefined,
         hasCode: Boolean(code),
@@ -481,12 +498,12 @@ export async function startLogin(): Promise<StartLoginResult> {
       }
 
       if (error) {
-        throw new Error(`APS devolvió error en el callback: ${error}`);
+        throw new Error(`APS devolvio error en el callback: ${error}`);
       }
 
       if (!code || !returnedState || returnedState !== pendingLogin.state) {
         response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
-        response.end('State inválido o code faltante.');
+        response.end('State invalido o code faltante.');
         return;
       }
 
@@ -500,17 +517,17 @@ export async function startLogin(): Promise<StartLoginResult> {
 
       response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       response.end(`<html><body style="font-family:sans-serif;padding:32px;">
-        <h1>Autenticación completada</h1>
-        <p>Puedes volver al chat. La sesión ACC 3-legged quedó guardada localmente.</p>
+        <h1>Autenticacion completada</h1>
+        <p>Puedes volver al chat. La sesion ACC 3-legged quedo guardada localmente.</p>
       </body></html>`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Error desconocido';
-      console.error('[apsUserAuth] Error manejando callback 3-legged', {
+      errorLog('apsUserAuth', 'Error manejando callback 3-legged', {
         message
       });
       response.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
       response.end(`<html><body style="font-family:sans-serif;padding:32px;">
-        <h1>No se pudo completar la autenticación</h1>
+        <h1>No se pudo completar la autenticacion</h1>
         <p>${message}</p>
       </body></html>`);
     } finally {
@@ -527,7 +544,7 @@ export async function startLogin(): Promise<StartLoginResult> {
   server.unref();
 
   const timeout = setTimeout(() => {
-    console.warn('[apsUserAuth] Login 3-legged expiró por timeout', {
+    warnLog('apsUserAuth', 'Login 3-legged expiro por timeout', {
       state: getMaskedState(state)
     });
     void closePendingLogin();
@@ -546,7 +563,7 @@ export async function startLogin(): Promise<StartLoginResult> {
     timeout
   };
 
-  console.log('[apsUserAuth] Login 3-legged iniciado', {
+  infoLog('apsUserAuth', 'Login 3-legged iniciado', {
     callbackUrl: redirectUri,
     state: getMaskedState(state),
     scopes
@@ -563,6 +580,6 @@ export async function startLogin(): Promise<StartLoginResult> {
       codeChallenge: pkce.challenge
     }),
     message:
-      'Abre la URL en tu navegador, completa sign-in + MFA y espera el callback local para terminar la autenticación.'
+      'Abre la URL en tu navegador, completa sign-in + MFA y espera el callback local para terminar la autenticacion.'
   };
 }

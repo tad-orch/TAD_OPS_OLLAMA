@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { AxiosError } from 'axios';
 import { env } from '../config/env.js';
+import { errorLog, infoLog, warnLog } from '../shared/logging/logger.js';
 import type {
   ApsPagination,
   ApsProject,
@@ -96,7 +97,7 @@ export async function getProjects(
   token: string,
   userId: string
 ): Promise<ApsProject[]> {
-  console.log(`[apsAdmin] Listando proyectos para account ${env.apsAccountId} con User-Id ${userId}`);
+  infoLog('apsAdmin', `Listando proyectos para account ${env.apsAccountId} con User-Id ${userId}`);
 
   try {
     const projects = await fetchAllOffsetPages<ApsProjectsResponse | ApsProject[], ApsProject>({
@@ -122,11 +123,11 @@ export async function getProjects(
       getPagination: normalizeProjectsPagination
     });
 
-    console.log(`[apsAdmin] Proyectos obtenidos: ${projects.length}`);
+    infoLog('apsAdmin', `Proyectos obtenidos: ${projects.length}`);
     return projects;
   } catch (error) {
     const axiosError = error as AxiosError;
-    console.error('[apsAdmin] Error listando proyectos', {
+    errorLog('apsAdmin', 'Error listando proyectos', {
       status: axiosError.response?.status,
       data: axiosError.response?.data
     });
@@ -156,13 +157,13 @@ export async function getProjectUsers(
   };
 
   if (options.region && !normalizedRegion) {
-    console.warn('[apsAdmin] Omitiendo Region inválido para listar usuarios del proyecto', {
+    warnLog('apsAdmin', 'Omitiendo Region invalido para listar usuarios del proyecto', {
       projectId: cleanedProjectId,
       requestedRegion: options.region
     });
   }
 
-  console.log(`[apsAdmin] Listando usuarios del proyecto ${cleanedProjectId}`);
+  infoLog('apsAdmin', `Listando usuarios del proyecto ${cleanedProjectId}`);
 
   try {
     const users = await fetchAllOffsetPages<ApsProjectUsersResponse, ApsProjectUser>({
@@ -186,11 +187,11 @@ export async function getProjectUsers(
       getPagination: normalizeProjectUsersPagination
     });
 
-    console.log(`[apsAdmin] Usuarios obtenidos para ${cleanedProjectId}: ${users.length}`);
+    infoLog('apsAdmin', `Usuarios obtenidos para ${cleanedProjectId}: ${users.length}`);
     return users;
   } catch (error) {
     const axiosError = error as AxiosError;
-    console.error('[apsAdmin] Error listando usuarios del proyecto', {
+    errorLog('apsAdmin', 'Error listando usuarios del proyecto', {
       endpoint,
       projectId: cleanedProjectId,
       headers: sanitizeHeadersForLog(headers),

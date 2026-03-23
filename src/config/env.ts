@@ -14,6 +14,23 @@ function optional(name: string, fallback: string): string {
   return process.env[name]?.trim() || fallback;
 }
 
+function optionalEnum<TValue extends string>(
+  name: string,
+  allowed: readonly TValue[],
+  fallback: TValue
+): TValue {
+  const raw = process.env[name]?.trim();
+  if (!raw) {
+    return fallback;
+  }
+
+  if (allowed.includes(raw as TValue)) {
+    return raw as TValue;
+  }
+
+  throw new Error(`La variable de entorno ${name} debe ser una de: ${allowed.join(', ')}`);
+}
+
 function optionalInt(name: string): number | undefined {
   const raw = process.env[name]?.trim();
   if (!raw) return undefined;
@@ -48,17 +65,11 @@ function optionalList(name: string, fallback: string[]): string[] {
   return values.length > 0 ? [...new Set(values)] : fallback;
 }
 
-const REQUIRED_THREE_LEGGED_CALLBACK_URL = 'http://localhost:3000/auth/three-legged';
+const DEFAULT_THREE_LEGGED_CALLBACK_URL = 'http://localhost:3000/auth/three-legged';
 const apsThreeLeggedCallbackUrl = optional(
   'APS_THREE_LEGGED_CALLBACK_URL',
-  REQUIRED_THREE_LEGGED_CALLBACK_URL
+  DEFAULT_THREE_LEGGED_CALLBACK_URL
 );
-
-if (apsThreeLeggedCallbackUrl !== REQUIRED_THREE_LEGGED_CALLBACK_URL) {
-  throw new Error(
-    `APS_THREE_LEGGED_CALLBACK_URL debe ser exactamente ${REQUIRED_THREE_LEGGED_CALLBACK_URL}`
-  );
-}
 
 export const env = {
   apsClientId: required('APS_CLIENT_ID'),
@@ -66,8 +77,14 @@ export const env = {
   apsAccountId: required('APS_ACCOUNT_ID'),
   apsUserId: required('APS_USER_ID'),
   apsBaseUrl: required('APS_BASE_URL').replace(/\/+$/, ''),
+  apsHubId: process.env.APS_HUB_ID?.trim() || undefined,
   apsThreeLeggedCallbackUrl,
   apsThreeLeggedScopes: optionalList('APS_THREE_LEGGED_SCOPES', ['data:read', 'account:read']),
+  storageBackend: optionalEnum('STORAGE_BACKEND', ['sqlite', 'mysql'], 'sqlite'),
+  mysqlHost: process.env.MYSQL_HOST?.trim() || undefined,
+  mysqlPort: optionalInt('MYSQL_PORT'),
+  mysqlDatabase: process.env.MYSQL_DATABASE?.trim() || undefined,
+  mysqlUser: process.env.MYSQL_USER?.trim() || undefined,
   ollamaModel: optional('OLLAMA_MODEL', 'qwen3:14b'),
   ollamaContextLength: optionalInt('OLLAMA_CONTEXT_LENGTH'),
   ollamaTemperature: optionalFloat('OLLAMA_TEMPERATURE'),

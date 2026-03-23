@@ -1,10 +1,12 @@
 import type {
   ApsProject,
   ApsProjectUser,
+  GetDmProjectsToolResult,
   ProjectScopedReadToolResult,
   GetProjectUsersToolResult,
   GetProjectsToolResult
 } from '../types/aps.js';
+import { describeChunkWindow } from '../shared/chunks/contextChunks.js';
 
 const MAX_ITEMS_FOR_MODEL = 20;
 
@@ -70,6 +72,21 @@ export function summarizeProjectScopedReadForModel<TItem>(
   };
 }
 
+export function summarizeDmProjectsForModel(
+  hubId: string,
+  projects: GetDmProjectsToolResult['projects']
+): GetDmProjectsToolResult {
+  return {
+    count: projects.length,
+    hubId,
+    projects: projects.slice(0, MAX_ITEMS_FOR_MODEL),
+    note:
+      projects.length > MAX_ITEMS_FOR_MODEL
+        ? `Hay ${projects.length} proyectos totales en el hub; ${describeChunkWindow(projects.length, MAX_ITEMS_FOR_MODEL)} y el resto queda fuera del prompt.`
+        : undefined
+  };
+}
+
 export function summarizeToolResultForStorage(toolName: string, payload: unknown): string {
   if (typeof payload !== 'object' || payload === null) {
     return String(payload);
@@ -83,6 +100,11 @@ export function summarizeToolResultForStorage(toolName: string, payload: unknown
   const maybeTotal = Reflect.get(payload, 'total');
   if (typeof maybeTotal === 'number') {
     return `${toolName}: ${maybeTotal} resultados`;
+  }
+
+  const maybeHubId = Reflect.get(payload, 'hubId');
+  if (typeof maybeCount === 'number' && typeof maybeHubId === 'string') {
+    return `${toolName}: ${maybeCount} resultados para hub ${maybeHubId}`;
   }
 
   return `${toolName}: resultado registrado`;

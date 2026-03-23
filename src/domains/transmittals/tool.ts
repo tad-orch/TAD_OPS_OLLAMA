@@ -1,5 +1,6 @@
 import type { Tool } from 'ollama';
 import { getValidAccessToken } from '../../services/apsUserAuth.js';
+import { replaceProjectScopedReadCache } from '../../shared/storage/projectScopedReadCacheRepo.js';
 import type {
   GetProjectTransmittalsToolArgs,
   GetProjectTransmittalsToolResult
@@ -46,6 +47,7 @@ export async function getProjectTransmittalsTool(
     ...(args.status?.trim() ? { status: args.status.trim() } : {}),
     ...(args.search?.trim() ? { search: args.search.trim() } : {})
   });
+  replaceProjectScopedReadCache('transmittal_cache', response.projectId, response.items);
 
   return summarizeProjectScopedReadForModel(
     response.projectId,

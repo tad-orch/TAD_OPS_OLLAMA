@@ -1,5 +1,6 @@
 import type { Tool } from 'ollama';
 import { getValidAccessToken } from '../../services/apsUserAuth.js';
+import { replaceProjectScopedReadCache } from '../../shared/storage/projectScopedReadCacheRepo.js';
 import type { GetProjectRfisToolArgs, GetProjectRfisToolResult } from '../../types/aps.js';
 import { summarizeProjectScopedReadForModel } from '../../utils/summarize.js';
 import { listProjectRfis } from './service.js';
@@ -43,6 +44,7 @@ export async function getProjectRfisTool(
     ...(args.status?.trim() ? { status: args.status.trim() } : {}),
     ...(args.search?.trim() ? { search: args.search.trim() } : {})
   });
+  replaceProjectScopedReadCache('rfi_cache', response.projectId, response.items);
 
   return summarizeProjectScopedReadForModel(
     response.projectId,

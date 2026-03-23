@@ -3,7 +3,9 @@ import type {
   ApsIssue,
   ApsRfi,
   ApsSubmittal,
+  ApsProjectUser,
   ApsTransmittal,
+  GetProjectUsersToolResult,
   ProjectScopedReadToolResult
 } from './aps.js';
 
@@ -33,6 +35,12 @@ export type ToolCallRecord = {
 };
 
 export type AgentMode = 'chat' | 'operate';
+
+export type AgentExecutionMode =
+  | 'chat'
+  | 'local_snapshot_query'
+  | 'external_fetch'
+  | 'fetch_then_analyze';
 
 export type AgentDomain =
   | 'acc_admin'
@@ -80,6 +88,49 @@ export type StructuredTurnPlan = {
   clarificationQuestion?: string | undefined;
 };
 
+export type SnapshotDomain =
+  | 'projects'
+  | 'users'
+  | 'issues'
+  | 'rfis'
+  | 'submittals'
+  | 'transmittals';
+
+export type SnapshotEntityType =
+  | 'project'
+  | 'user'
+  | 'issue'
+  | 'rfi'
+  | 'submittal'
+  | 'transmittal';
+
+export type SnapshotMetadata = {
+  statusCounts?: Record<string, number> | undefined;
+  companyCounts?: Record<string, number> | undefined;
+  lifecycleCounts?: Record<string, number> | undefined;
+  prefixes?: string[] | undefined;
+  source?: string | undefined;
+};
+
+export type SessionSnapshotResource = {
+  id: string;
+  sessionId: string;
+  domain: SnapshotDomain;
+  entityType: SnapshotEntityType;
+  fetchedAt: string;
+  itemCount: number;
+  projectId?: string | undefined;
+  projectName?: string | undefined;
+  rawDocumentIds?: string[] | undefined;
+  canonicalIds?: string[] | undefined;
+  metadata?: SnapshotMetadata | undefined;
+};
+
+export type SnapshotRegistry = {
+  snapshots: SessionSnapshotResource[];
+  updatedAt: string;
+};
+
 export type ProjectLifecycle = 'active' | 'archived' | 'unknown';
 
 export type ProjectMemoryItem = {
@@ -96,8 +147,12 @@ export type ProjectScopedReadMemory<TItem> = ProjectScopedReadToolResult<TItem> 
 
 export type SessionMemory = {
   recentProjects?: ProjectMemoryItem[] | undefined;
+  recentUsers?: Array<GetProjectUsersToolResult & { projectName?: string | undefined; fetchedAt: string }> | undefined;
   lastResolvedProjectId?: string | undefined;
   lastResolvedProjectName?: string | undefined;
+  currentProjectAliases?: string[] | undefined;
+  currentProjectConfidence?: number | undefined;
+  currentProjectUpdatedAt?: string | undefined;
   authMode?: '2legged' | '3legged' | undefined;
   authReadyForConstructionEndpoints?: boolean | undefined;
   authPendingLogin?: boolean | undefined;

@@ -1,6 +1,12 @@
 import type { ChatResponse, Message } from 'ollama';
 import { env } from '../config/env.js';
 import { getSessionContext, upsertSessionContext } from '../db/repositories/contextRepo.js';
+import {
+  getLatestUsableSnapshot,
+  registerProjectScopedReadSnapshot,
+  registerProjectsSnapshot,
+  registerUsersSnapshot
+} from '../db/repositories/snapshotRegistryRepo.js';
 import { addMessage } from '../db/repositories/messagesRepo.js';
 import { getFreshProjectsFromCache } from '../db/repositories/projectCacheRepo.js';
 import { getFreshUsersFromCache } from '../db/repositories/userCacheRepo.js';
@@ -8,6 +14,7 @@ import { getSessionById, touchSession, updateSessionAfterUserMessage } from '../
 import { addToolCall } from '../db/repositories/toolCallsRepo.js';
 import { systemPrompt, turnPlannerPrompt } from '../prompts/systemPrompt.js';
 import { buildContextForSession } from '../services/contextBuilder.js';
+import { determineExecutionMode, tryRunLocalSnapshotQuery } from '../services/localSnapshotQuery.js';
 import { chatWithOllama } from '../services/ollamaClient.js';
 import { getConstructionAuthStatus } from '../services/apsUserAuth.js';
 import { getProjectsByAccountTool } from '../tools/getProjectsTool.js';
@@ -34,6 +41,7 @@ import type {
 } from '../types/aps.js';
 import type {
   AgentDomain,
+  AgentExecutionMode,
   AgentIntent,
   AgentMode,
   PlannedToolCall,
@@ -858,6 +866,22 @@ function updateProjectsMemory(sessionId: string, projects: ApsProject[]): void {
   });
 }
 
+function buildProjectAliasCandidates(projectId: string, projectName?: string): string[] {
+  const aliases = new Set<string>([projectId]);
+  if (projectName?.trim()) {
+    aliases.add(projectName.trim());
+    const tokens = projectName
+      .split(/[\s:()_-]+/)
+      .map((part) => part.trim())
+      .filter((part) => part.length >= 3);
+    for (const token of tokens.slice(0, 8)) {
+      aliases.add(token);
+    }
+  }
+
+  return [...aliases].slice(0, 10);
+}
+
 function updateProjectSelectionMemory(
   sessionId: string,
   projectId: string,
@@ -866,7 +890,10 @@ function updateProjectSelectionMemory(
   const current = getSessionContext(sessionId);
   const nextMemory = {
     ...current?.memory_json,
-    lastResolvedProjectId: projectId
+    lastResolvedProjectId: projectId,
+    currentProjectAliases: buildProjectAliasCandidates(projectId, projectName),
+    currentProjectConfidence: projectName ? 1 : 0.85,
+    currentProjectUpdatedAt: new Date().toISOString()
   };
 
   if (projectName) {
@@ -880,6 +907,33 @@ function updateProjectSelectionMemory(
     current_project_id: projectId,
     current_project_name: projectName ?? null,
     memory_json: nextMemory
+  });
+}
+
+function updateUsersMemory(
+  sessionId: string,
+  result: GetProjectUsersToolResult,
+  projectName?: string
+): void {
+  const current = getSessionContext(sessionId);
+  const existing = (current?.memory_json.recentUsers ?? []).filter(
+    (snapshot) => snapshot.projectId !== result.projectId
+  );
+  const nextSnapshots = [
+    {
+      ...result,
+      ...(projectName ? { projectName } : {}),
+      fetchedAt: new Date().toISOString()
+    },
+    ...existing
+  ].slice(0, MAX_RECENT_PROJECT_SCOPED_SNAPSHOTS);
+
+  upsertSessionContext(sessionId, {
+    current_account_id: env.apsAccountId,
+    memory_json: {
+      ...current?.memory_json,
+      recentUsers: nextSnapshots
+    }
   });
 }
 
@@ -1722,6 +1776,7 @@ async function executeToolRequest(
         getFreshProjectsFromCache(env.apsAccountId, PROJECTS_CACHE_TTL_MS) ??
         (isGetProjectsToolResult(toolResult) ? toolResult.projects : resolved.projects);
       updateProjectsMemory(sessionId, nextProjects);
+      registerProjectsSnapshot(sessionId, nextProjects);
     }
 
     if (toolRequest.name === 'get_project_users') {
@@ -1731,6 +1786,11 @@ async function executeToolRequest(
         toolArgs.projectId.replace(/^b\./, ''),
         resolved.resolvedProjectName
       );
+
+      if (isGetProjectUsersToolResult(toolResult)) {
+        updateUsersMemory(sessionId, toolResult, resolved.resolvedProjectName);
+        registerUsersSnapshot(sessionId, toolResult, resolved.resolvedProjectName);
+      }
     }
 
     if (
@@ -1767,6 +1827,44 @@ async function executeToolRequest(
         toolResult,
         resolved.resolvedProjectName
       );
+
+      const snapshotDomainByToolName: Record<
+        Extract<ToolName, 'get_project_issues' | 'get_project_rfis' | 'get_project_submittals' | 'get_project_transmittals'>,
+        'issues' | 'rfis' | 'submittals' | 'transmittals'
+      > = {
+        get_project_issues: 'issues',
+        get_project_rfis: 'rfis',
+        get_project_submittals: 'submittals',
+        get_project_transmittals: 'transmittals'
+      };
+      const snapshotEntityTypeByToolName: Record<
+        Extract<ToolName, 'get_project_issues' | 'get_project_rfis' | 'get_project_submittals' | 'get_project_transmittals'>,
+        'issue' | 'rfi' | 'submittal' | 'transmittal'
+      > = {
+        get_project_issues: 'issue',
+        get_project_rfis: 'rfi',
+        get_project_submittals: 'submittal',
+        get_project_transmittals: 'transmittal'
+      };
+
+      registerProjectScopedReadSnapshot(sessionId, {
+        domain:
+          snapshotDomainByToolName[
+            toolRequest.name as Extract<
+              ToolName,
+              'get_project_issues' | 'get_project_rfis' | 'get_project_submittals' | 'get_project_transmittals'
+            >
+          ],
+        entityType:
+          snapshotEntityTypeByToolName[
+            toolRequest.name as Extract<
+              ToolName,
+              'get_project_issues' | 'get_project_rfis' | 'get_project_submittals' | 'get_project_transmittals'
+          >
+        ],
+        result: toolResult,
+        ...(resolved.resolvedProjectName ? { projectName: resolved.resolvedProjectName } : {})
+      });
     }
 
     if (toolRequest.name === 'start_acc_user_login' || PROJECT_SCOPED_READ_TOOL_NAMES.has(toolRequest.name)) {
@@ -2306,11 +2404,13 @@ async function executeProjectScopedReadIntent<
   TResult extends ProjectScopedReadToolResult<ProjectScopedReadItemBase>
 >(
   sessionId: string,
+  userText: string,
   plan: StructuredTurnPlan,
   cachedProjects: ApsProject[],
   usedTools: string[],
   options: AgentOptions,
   planningResponse: ChatResponse | undefined,
+  executionMode: AgentExecutionMode,
   config: ProjectScopedReadConfig<TArgs, TResult>
 ): Promise<AgentResult> {
   const projectResolution = await resolveProjectForScopedTool(
@@ -2393,6 +2493,13 @@ async function executeProjectScopedReadIntent<
     );
   }
 
+  if (executionMode === 'fetch_then_analyze') {
+    const localAnswer = await tryRunLocalSnapshotQuery(sessionId, userText, plan);
+    if (localAnswer) {
+      return finalizeAgentResult(sessionId, localAnswer, usedTools, planningResponse);
+    }
+  }
+
   return finalizeAgentResult(
     sessionId,
     config.formatSuccess(
@@ -2408,6 +2515,7 @@ async function executeOperationalPlan(
   sessionId: string,
   userText: string,
   plan: StructuredTurnPlan,
+  executionMode: AgentExecutionMode,
   options: AgentOptions,
   planningResponse?: ChatResponse
 ): Promise<AgentResult> {
@@ -2587,11 +2695,13 @@ async function executeOperationalPlan(
   if (readConfig) {
     return executeProjectScopedReadIntent(
       sessionId,
+      userText,
       plan,
       cachedProjects,
       usedTools,
       options,
       planningResponse,
+      executionMode,
       readConfig as ProjectScopedReadConfig<
         { projectId: string },
         ProjectScopedReadToolResult<ProjectScopedReadItemBase>
@@ -2685,6 +2795,7 @@ export async function runAgent(
     const interpreted = await interpretTurn(sessionId);
     plan = interpreted.plan;
     planningResponse = interpreted.raw;
+    const executionMode = determineExecutionMode(sessionId, userText, plan);
     const runtimeQuery = analyzeRuntimeProjectQuery(userText, plan);
     const hasProjectContext = getProjectsFromOperationalSources(sessionId, []).length > 0;
     const hasUserContext = Boolean(getFreshUsersForSessionProject(sessionId));
@@ -2696,12 +2807,18 @@ export async function runAgent(
     );
     const shouldHandleAsAccOperation =
       (plan.mode !== 'chat' && plan.domain !== 'unknown' && plan.intent !== 'unknown') ||
+      executionMode === 'local_snapshot_query' ||
+      executionMode === 'fetch_then_analyze' ||
       ((runtimeQuery.isCompound ||
         runtimeQuery.wantsStatusCounts ||
         runtimeQuery.wantsPrefixFilter ||
         runtimeQuery.wantsProjectUsers ||
         runtimeQuery.wantsUserCompanyCounts) &&
         (hasProjectContext || hasUserContext || hasProjectScopedReadContext));
+
+    console.log(
+      `[agent] Estrategia runtime: executionMode=${executionMode} intent=${plan.intent} requiresTools=${plan.requiresTools}`
+    );
 
     if (plan.needsClarification && !shouldHandleAsAccOperation) {
       return finalizeAgentResult(
@@ -2712,6 +2829,13 @@ export async function runAgent(
       );
     }
 
+    if (executionMode === 'local_snapshot_query') {
+      const localAnswer = await tryRunLocalSnapshotQuery(sessionId, userText, plan);
+      if (localAnswer) {
+        return finalizeAgentResult(sessionId, localAnswer, [], planningResponse);
+      }
+    }
+
     if (plan.mode === 'chat' && !shouldHandleAsAccOperation) {
       return runDirectConversation(sessionId, plan.mode !== 'chat');
     }
@@ -2720,7 +2844,7 @@ export async function runAgent(
       return runDirectConversation(sessionId, plan.mode !== 'chat');
     }
 
-    return executeOperationalPlan(sessionId, userText, plan, options, planningResponse);
+    return executeOperationalPlan(sessionId, userText, plan, executionMode, options, planningResponse);
   } catch (error) {
     const errorMessage =
       error instanceof Error ? error.message : 'Fallo la planificación estructurada del turno';

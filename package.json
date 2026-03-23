@@ -12,6 +12,9 @@
     "test:auth-status": "tsx src/scripts/testAuthStatus.ts",
     "test:mysql-storage": "tsx src/scripts/testMysqlStorage.ts",
     "test:ollama-projects": "tsx src/scripts/testOllamaProjects.ts",
+    "test:runtime-local-projects": "tsx src/scripts/testRuntimeLocalProjects.ts",
+    "test:runtime-local-issues": "tsx src/scripts/testRuntimeLocalIssues.ts",
+    "test:runtime-project-promotion": "tsx src/scripts/testRuntimeProjectPromotion.ts",
     "chat": "tsx src/app/chat.ts"
   },
   "keywords": [],

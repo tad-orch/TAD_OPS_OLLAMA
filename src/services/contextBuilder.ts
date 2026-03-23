@@ -1,6 +1,7 @@
 import type { Message } from 'ollama';
 import { env } from '../config/env.js';
 import { getSessionContext } from '../db/repositories/contextRepo.js';
+import { getSnapshotRegistry } from '../db/repositories/snapshotRegistryRepo.js';
 import { listRecentMessages } from '../db/repositories/messagesRepo.js';
 import type {
   BuiltContext,
@@ -105,6 +106,12 @@ function formatContextMessage(sessionId: string, recentMessages: MessageRecord[]
       ? `${sessionContext.current_project_name} (${sessionContext.current_project_id})`
       : sessionContext.current_project_id;
     lines.push(`- currentProject: ${currentProjectLabel}`);
+    if (memory?.currentProjectConfidence !== undefined) {
+      lines.push(`- currentProjectConfidence: ${memory.currentProjectConfidence.toFixed(2)}`);
+    }
+    if (memory?.currentProjectUpdatedAt) {
+      lines.push(`- currentProjectFreshness: ${memory.currentProjectUpdatedAt}`);
+    }
   }
 
   if (
@@ -153,6 +160,20 @@ function formatContextMessage(sessionId: string, recentMessages: MessageRecord[]
   lines.push(...buildReadSnapshotLines('Rfis', memory?.recentRfis));
   lines.push(...buildReadSnapshotLines('Submittals', memory?.recentSubmittals));
   lines.push(...buildReadSnapshotLines('Transmittals', memory?.recentTransmittals));
+
+  const snapshotRegistry = getSnapshotRegistry(sessionId);
+  if (snapshotRegistry.snapshots.length > 0) {
+    const latestSnapshots = snapshotRegistry.snapshots
+      .slice(0, 6)
+      .map((snapshot) => {
+        const scope = snapshot.projectName
+          ? `${snapshot.projectName} (${snapshot.projectId ?? 'sin projectId'})`
+          : snapshot.projectId ?? 'scope global';
+        return `${snapshot.domain}: ${snapshot.itemCount} items para ${scope}`;
+      })
+      .join('; ');
+    lines.push(`- snapshotRegistry: ${latestSnapshots}`);
+  }
 
   return lines.join('\n');
 }

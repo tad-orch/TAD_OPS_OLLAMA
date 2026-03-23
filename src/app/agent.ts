@@ -2,7 +2,6 @@ import type { ChatResponse, Message } from 'ollama';
 import { env } from '../config/env.js';
 import { getSessionContext, upsertSessionContext } from '../db/repositories/contextRepo.js';
 import {
-  getLatestUsableSnapshot,
   registerProjectScopedReadSnapshot,
   registerProjectsSnapshot,
   registerUsersSnapshot
@@ -13,10 +12,13 @@ import { getFreshUsersFromCache } from '../db/repositories/userCacheRepo.js';
 import { getSessionById, touchSession, updateSessionAfterUserMessage } from '../db/repositories/sessionsRepo.js';
 import { addToolCall } from '../db/repositories/toolCallsRepo.js';
 import { systemPrompt, turnPlannerPrompt } from '../prompts/systemPrompt.js';
+import { analyzeTurn } from '../services/analyzeTurn.js';
 import { buildContextForSession } from '../services/contextBuilder.js';
-import { determineExecutionMode, tryRunLocalSnapshotQuery } from '../services/localSnapshotQuery.js';
+import { decideAction } from '../services/decideAction.js';
+import { tryRunLocalSnapshotQuery } from '../services/localSnapshotQuery.js';
 import { chatWithOllama } from '../services/ollamaClient.js';
 import { getConstructionAuthStatus } from '../services/apsUserAuth.js';
+import { resolveEvidence } from '../services/resolveEvidence.js';
 import { getProjectsByAccountTool } from '../tools/getProjectsTool.js';
 import { toolDefinitions, toolHandlers } from '../tools/index.js';
 import type {
@@ -40,6 +42,7 @@ import type {
   ProjectScopedReadToolResult
 } from '../types/aps.js';
 import type {
+  ActionDecision,
   AgentDomain,
   AgentExecutionMode,
   AgentIntent,
@@ -2795,7 +2798,9 @@ export async function runAgent(
     const interpreted = await interpretTurn(sessionId);
     plan = interpreted.plan;
     planningResponse = interpreted.raw;
-    const executionMode = determineExecutionMode(sessionId, userText, plan);
+    const analysis = analyzeTurn(sessionId, userText, plan);
+    const evidence = await resolveEvidence(sessionId, analysis);
+    const actionDecision: ActionDecision = decideAction(analysis, evidence);
     const runtimeQuery = analyzeRuntimeProjectQuery(userText, plan);
     const hasProjectContext = getProjectsFromOperationalSources(sessionId, []).length > 0;
     const hasUserContext = Boolean(getFreshUsersForSessionProject(sessionId));
@@ -2807,8 +2812,10 @@ export async function runAgent(
     );
     const shouldHandleAsAccOperation =
       (plan.mode !== 'chat' && plan.domain !== 'unknown' && plan.intent !== 'unknown') ||
-      executionMode === 'local_snapshot_query' ||
-      executionMode === 'fetch_then_analyze' ||
+      actionDecision.kind === 'answer_local' ||
+      actionDecision.kind === 'fetch_external' ||
+      actionDecision.kind === 'fetch_then_analyze' ||
+      actionDecision.kind === 'request_auth' ||
       ((runtimeQuery.isCompound ||
         runtimeQuery.wantsStatusCounts ||
         runtimeQuery.wantsPrefixFilter ||
@@ -2817,19 +2824,23 @@ export async function runAgent(
         (hasProjectContext || hasUserContext || hasProjectScopedReadContext));
 
     console.log(
-      `[agent] Estrategia runtime: executionMode=${executionMode} intent=${plan.intent} requiresTools=${plan.requiresTools}`
+      `[agent] Estrategia runtime: action=${actionDecision.kind} executionMode=${actionDecision.executionMode} intent=${plan.intent} reason=${actionDecision.reason}`
     );
 
-    if (plan.needsClarification && !shouldHandleAsAccOperation) {
+    if (actionDecision.kind === 'ask_clarification' && !shouldHandleAsAccOperation) {
       return finalizeAgentResult(
         sessionId,
-        plan.clarificationQuestion ?? 'Necesito una aclaración para continuar.',
+        actionDecision.message,
         [],
         planningResponse
       );
     }
 
-    if (executionMode === 'local_snapshot_query') {
+    if (actionDecision.kind === 'request_auth') {
+      return finalizeAgentResult(sessionId, actionDecision.message, [], planningResponse);
+    }
+
+    if (actionDecision.kind === 'answer_local') {
       const localAnswer = await tryRunLocalSnapshotQuery(sessionId, userText, plan);
       if (localAnswer) {
         return finalizeAgentResult(sessionId, localAnswer, [], planningResponse);
@@ -2844,7 +2855,14 @@ export async function runAgent(
       return runDirectConversation(sessionId, plan.mode !== 'chat');
     }
 
-    return executeOperationalPlan(sessionId, userText, plan, executionMode, options, planningResponse);
+    return executeOperationalPlan(
+      sessionId,
+      userText,
+      plan,
+      actionDecision.executionMode,
+      options,
+      planningResponse
+    );
   } catch (error) {
     const errorMessage =
       error instanceof Error ? error.message : 'Fallo la planificación estructurada del turno';

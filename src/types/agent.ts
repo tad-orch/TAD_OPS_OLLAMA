@@ -40,7 +40,9 @@ export type AgentExecutionMode =
   | 'chat'
   | 'local_snapshot_query'
   | 'external_fetch'
-  | 'fetch_then_analyze';
+  | 'fetch_then_analyze'
+  | 'ask_clarification'
+  | 'request_auth';
 
 export type AgentDomain =
   | 'acc_admin'
@@ -108,6 +110,7 @@ export type SnapshotMetadata = {
   statusCounts?: Record<string, number> | undefined;
   companyCounts?: Record<string, number> | undefined;
   lifecycleCounts?: Record<string, number> | undefined;
+  typeCounts?: Record<string, number> | undefined;
   prefixes?: string[] | undefined;
   source?: string | undefined;
 };
@@ -124,12 +127,73 @@ export type SessionSnapshotResource = {
   rawDocumentIds?: string[] | undefined;
   canonicalIds?: string[] | undefined;
   metadata?: SnapshotMetadata | undefined;
+  confidence?: number | undefined;
+  freshnessMs?: number | undefined;
 };
 
 export type SnapshotRegistry = {
   snapshots: SessionSnapshotResource[];
   updatedAt: string;
 };
+
+export type TurnAnalysis = {
+  userText: string;
+  plan: StructuredTurnPlan;
+  executionModeHint: AgentExecutionMode;
+  isAnalyticalFollowUp: boolean;
+  domain?: SnapshotDomain | undefined;
+  needsProjectScope: boolean;
+  needsConstructionAuth: boolean;
+  asksForClarificationCandidate: boolean;
+};
+
+export type EvidenceSummary = {
+  domain?: SnapshotDomain | undefined;
+  currentProjectId?: string | undefined;
+  currentProjectName?: string | undefined;
+  currentProjectAliases: string[];
+  hasUsableSnapshot: boolean;
+  usableSnapshot?: SessionSnapshotResource | undefined;
+  recentSnapshots: SessionSnapshotResource[];
+  hasCanonicalEvidence: boolean;
+  hasChunkEvidence: boolean;
+  hasProjectEvidence: boolean;
+  hasUserEvidence: boolean;
+  authMode?: '2legged' | '3legged' | undefined;
+  authReadyForConstructionEndpoints?: boolean | undefined;
+  needsConstructionAuth: boolean;
+  evidenceSufficientForLocalAnswer: boolean;
+  reason: string;
+};
+
+export type ActionDecision =
+  | {
+      kind: 'answer_local';
+      executionMode: AgentExecutionMode;
+      reason: string;
+    }
+  | {
+      kind: 'fetch_external';
+      executionMode: AgentExecutionMode;
+      reason: string;
+    }
+  | {
+      kind: 'fetch_then_analyze';
+      executionMode: AgentExecutionMode;
+      reason: string;
+    }
+  | {
+      kind: 'ask_clarification';
+      executionMode: AgentExecutionMode;
+      reason: string;
+      message: string;
+    }
+  | {
+      kind: 'request_auth';
+      executionMode: AgentExecutionMode;
+      reason: string;
+      message: string;
+    };
 
 export type ProjectLifecycle = 'active' | 'archived' | 'unknown';
 

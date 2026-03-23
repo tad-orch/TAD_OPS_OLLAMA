@@ -55,7 +55,7 @@ function quoteIfNeeded(value: string): string {
   return /[\s-]/.test(value) ? `"${value}"` : value;
 }
 
-function inferDomainFromPlan(
+export function inferDomainFromPlan(
   sessionId: string,
   plan: StructuredTurnPlan,
   loweredText: string
@@ -164,7 +164,7 @@ function extractPrefixValue(userText: string): string | undefined {
   );
 }
 
-function isAnalyticalQuestion(loweredText: string): boolean {
+export function isAnalyticalQuestion(loweredText: string): boolean {
   return [
     /\bcu[aá]nt[oa]s?\b/,
     /\bagr[úu]palos?\b/,

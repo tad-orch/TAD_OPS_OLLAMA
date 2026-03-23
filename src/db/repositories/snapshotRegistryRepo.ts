@@ -25,6 +25,7 @@ type RuntimeContextRow = {
 
 const SNAPSHOT_REGISTRY_KIND = 'snapshot_registry';
 const MAX_SESSION_SNAPSHOTS = 24;
+const DEFAULT_USABLE_SNAPSHOT_MAX_AGE_MS = 30 * 60 * 1000;
 
 function getRuntimeContextRow(sessionId: string, contextKind: string): RuntimeContextRow | undefined {
   return db
@@ -182,6 +183,8 @@ function createSnapshot(params: {
   rawDocumentIds?: string[];
   canonicalIds?: string[];
   metadata?: SnapshotMetadata;
+  confidence?: number;
+  freshnessMs?: number;
 }): SessionSnapshotResource {
   return {
     id: createEntityId('snap'),
@@ -194,7 +197,9 @@ function createSnapshot(params: {
     ...(params.projectName ? { projectName: params.projectName } : {}),
     ...(params.rawDocumentIds?.length ? { rawDocumentIds: params.rawDocumentIds } : {}),
     ...(params.canonicalIds?.length ? { canonicalIds: params.canonicalIds } : {}),
-    ...(params.metadata ? { metadata: params.metadata } : {})
+    ...(params.metadata ? { metadata: params.metadata } : {}),
+    ...(params.confidence !== undefined ? { confidence: params.confidence } : {}),
+    ...(params.freshnessMs !== undefined ? { freshnessMs: params.freshnessMs } : {})
   };
 }
 
@@ -202,13 +207,50 @@ export function getSnapshotRegistry(sessionId: string): SnapshotRegistry {
   return readRegistry(sessionId);
 }
 
+export function saveSnapshot(
+  sessionId: string,
+  snapshot: SessionSnapshotResource
+): SnapshotRegistry {
+  return upsertSnapshot(sessionId, snapshot);
+}
+
+export function listRecentSnapshots(sessionId: string, limit = MAX_SESSION_SNAPSHOTS): SessionSnapshotResource[] {
+  return readRegistry(sessionId).snapshots.slice(0, Math.max(1, limit));
+}
+
+export function getLatestSnapshot(
+  sessionId: string,
+  domain: SnapshotDomain
+): SessionSnapshotResource | undefined {
+  return readRegistry(sessionId).snapshots.find((snapshot) => snapshot.domain === domain);
+}
+
+export function getSnapshotForDomainAndProject(
+  sessionId: string,
+  domain: SnapshotDomain,
+  projectId: string
+): SessionSnapshotResource | undefined {
+  const normalizedProjectId = projectId.replace(/^b\./, '');
+  return readRegistry(sessionId).snapshots.find(
+    (snapshot) => snapshot.domain === domain && snapshot.projectId === normalizedProjectId
+  );
+}
+
 export function getLatestUsableSnapshot(
   sessionId: string,
   domain: SnapshotDomain,
-  projectId?: string
+  projectId?: string,
+  options: {
+    maxAgeMs?: number;
+    allowEmptySnapshot?: boolean;
+    minConfidence?: number;
+  } = {}
 ): SessionSnapshotResource | undefined {
   const registry = readRegistry(sessionId);
   const normalizedProjectId = projectId?.replace(/^b\./, '');
+  const now = Date.now();
+  const maxAgeMs = options.maxAgeMs ?? DEFAULT_USABLE_SNAPSHOT_MAX_AGE_MS;
+  const minConfidence = options.minConfidence ?? 0.4;
 
   return registry.snapshots.find((snapshot) => {
     if (snapshot.domain !== domain) {
@@ -216,10 +258,26 @@ export function getLatestUsableSnapshot(
     }
 
     if (!normalizedProjectId) {
-      return true;
+      const ageMs = now - new Date(snapshot.fetchedAt).getTime();
+      const confidence = snapshot.confidence ?? 0.8;
+      if (ageMs > maxAgeMs || confidence < minConfidence) {
+        return false;
+      }
+
+      return options.allowEmptySnapshot === true ? snapshot.itemCount >= 0 : snapshot.itemCount > 0;
     }
 
-    return snapshot.projectId === normalizedProjectId;
+    if (snapshot.projectId !== normalizedProjectId) {
+      return false;
+    }
+
+    const ageMs = now - new Date(snapshot.fetchedAt).getTime();
+    const confidence = snapshot.confidence ?? 0.8;
+    if (ageMs > maxAgeMs || confidence < minConfidence) {
+      return false;
+    }
+
+    return options.allowEmptySnapshot === true ? snapshot.itemCount >= 0 : snapshot.itemCount > 0;
   });
 }
 
@@ -249,7 +307,9 @@ export function registerProjectsSnapshot(
         statusCounts: countByStatus(projects),
         prefixes: getProjectPrefixes(projects),
         source: 'tool:get_projects_by_account'
-      }
+      },
+      confidence: 0.95,
+      freshnessMs: 0
     })
   );
 }
@@ -276,7 +336,9 @@ export function registerUsersSnapshot(
         companyCounts: countByCompany(result.users),
         statusCounts: countByStatus(result.users),
         source: 'tool:get_project_users'
-      }
+      },
+      confidence: 0.95,
+      freshnessMs: 0
     })
   );
 }
@@ -312,7 +374,9 @@ export function registerProjectScopedReadSnapshot<TItem extends ProjectScopedRea
       metadata: {
         statusCounts: countByStatus(params.result.items),
         source: params.result.source
-      }
+      },
+      confidence: 0.9,
+      freshnessMs: 0
     })
   );
 }

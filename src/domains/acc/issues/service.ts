@@ -50,16 +50,18 @@ export async function listProjectIssues(
   token: string,
   projectId: string,
   filters: ProjectScopedReadFilters = {}
-): Promise<{ projectId: string; items: ApsIssue[]; source: string }> {
+): Promise<{ projectId: string; items: ApsIssue[]; source: string; endpoint: string; rawPages: unknown[] }> {
   const normalizedProjectId = normalizeConstructionProjectId(projectId);
   const endpoint = `${env.apsBaseUrl}/construction/issues/v1/projects/${normalizedProjectId}/issues`;
+  const rawPages: unknown[] = [];
 
   console.log(`[issues] Listando issues del proyecto ${normalizedProjectId}`);
 
   const rawIssues = await fetchConstructionList<Record<string, unknown>>({
     domain: 'issues',
     token,
-    endpoint
+    endpoint,
+    onPage: (payload) => rawPages.push(payload)
   });
   const issues = applyIssueFilters(rawIssues.map(summarizeIssue), filters);
 
@@ -68,6 +70,8 @@ export async function listProjectIssues(
   return {
     projectId: normalizedProjectId,
     items: issues,
-    source: ISSUES_SOURCE
+    source: ISSUES_SOURCE,
+    endpoint,
+    rawPages
   };
 }

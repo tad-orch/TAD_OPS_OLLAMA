@@ -1,5 +1,6 @@
 import type { Tool } from 'ollama';
 import { getValidAccessToken } from '../../../services/apsUserAuth.js';
+import { persistRfisHybridSnapshot } from '../../../shared/storage/hybridPersistence.js';
 import { replaceProjectScopedReadCache } from '../../../shared/storage/projectScopedReadCacheRepo.js';
 import type { GetProjectRfisToolArgs, GetProjectRfisToolResult } from '../../../types/aps.js';
 import { summarizeProjectScopedReadForModel } from '../../../utils/summarize.js';
@@ -43,6 +44,16 @@ export async function getProjectRfisTool(
   const response = await listProjectRfis(token, projectId, {
     ...(args.status?.trim() ? { status: args.status.trim() } : {}),
     ...(args.search?.trim() ? { search: args.search.trim() } : {})
+  });
+  await persistRfisHybridSnapshot({
+    projectId: response.projectId,
+    endpoint: response.endpoint,
+    requestContext: {
+      status: args.status,
+      search: args.search
+    },
+    rawPages: response.rawPages,
+    items: response.items
   });
   replaceProjectScopedReadCache('rfi_cache', response.projectId, response.items);
 

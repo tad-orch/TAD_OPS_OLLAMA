@@ -14,6 +14,23 @@ function optional(name: string, fallback: string): string {
   return process.env[name]?.trim() || fallback;
 }
 
+function optionalBoolean(name: string, fallback: boolean): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) {
+    return fallback;
+  }
+
+  if (['1', 'true', 'yes', 'on'].includes(raw)) {
+    return true;
+  }
+
+  if (['0', 'false', 'no', 'off'].includes(raw)) {
+    return false;
+  }
+
+  throw new Error(`La variable de entorno ${name} debe ser booleana`);
+}
+
 function optionalEnum<TValue extends string>(
   name: string,
   allowed: readonly TValue[],
@@ -80,11 +97,19 @@ export const env = {
   apsHubId: process.env.APS_HUB_ID?.trim() || undefined,
   apsThreeLeggedCallbackUrl,
   apsThreeLeggedScopes: optionalList('APS_THREE_LEGGED_SCOPES', ['data:read', 'account:read']),
-  storageBackend: optionalEnum('STORAGE_BACKEND', ['sqlite', 'mysql'], 'sqlite'),
+  storageBackend: optionalEnum(
+    'STORAGE_BACKEND',
+    ['sqlite', 'mysql'],
+    process.env.MYSQL_HOST?.trim() ? 'mysql' : 'sqlite'
+  ),
   mysqlHost: process.env.MYSQL_HOST?.trim() || undefined,
-  mysqlPort: optionalInt('MYSQL_PORT'),
+  mysqlPort: optionalInt('MYSQL_PORT') ?? 3306,
   mysqlDatabase: process.env.MYSQL_DATABASE?.trim() || undefined,
   mysqlUser: process.env.MYSQL_USER?.trim() || undefined,
+  mysqlPassword: process.env.MYSQL_PASSWORD?.trim() || undefined,
+  mysqlSsl: optionalBoolean('MYSQL_SSL', false),
+  mysqlPoolMin: optionalInt('MYSQL_POOL_MIN') ?? 1,
+  mysqlPoolMax: optionalInt('MYSQL_POOL_MAX') ?? 10,
   ollamaModel: optional('OLLAMA_MODEL', 'qwen3:14b'),
   ollamaContextLength: optionalInt('OLLAMA_CONTEXT_LENGTH'),
   ollamaTemperature: optionalFloat('OLLAMA_TEMPERATURE'),

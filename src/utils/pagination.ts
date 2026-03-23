@@ -9,6 +9,7 @@ type FetchAllPagesOptions<TResponse, TItem> = {
   fetchPage: (page: { limit: number; offset: number }) => Promise<TResponse>;
   getItems: (response: TResponse) => TItem[];
   getPagination?: (response: TResponse) => OffsetPagination | undefined;
+  onPage?: (response: TResponse, page: { limit: number; offset: number }, pageIndex: number) => void;
 };
 
 export async function fetchAllOffsetPages<TResponse, TItem>(
@@ -23,6 +24,7 @@ export async function fetchAllOffsetPages<TResponse, TItem>(
       limit,
       offset: currentOffset
     });
+    options.onPage?.(response, { limit, offset: currentOffset }, pageIndex);
 
     const items = options.getItems(response);
     allItems.push(...items);

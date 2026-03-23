@@ -12,6 +12,8 @@ const PROJECTS_CACHE_TTL_MS = 15 * 60 * 1000;
 export type AccountProjectsResponse = {
   authMode: AuthMode;
   projects: ApsProject[];
+  rawPages: unknown[];
+  endpoint: string;
   note?: string | undefined;
 };
 
@@ -26,23 +28,31 @@ export async function listAccountProjects(
     throw new Error('No hay actingUserId disponible para ejecutar get_projects_by_account');
   }
 
+  const endpoint = `${env.apsBaseUrl}/hq/v1/accounts/${env.apsAccountId}/projects`;
   const cachedProjects = getFreshProjectsFromCache(env.apsAccountId, PROJECTS_CACHE_TTL_MS);
   if (cachedProjects) {
     return {
       authMode: '3legged',
       projects: cachedProjects,
-      note: 'Se reutilizó project_cache local sin reenviar la carga completa al modelo.'
+      rawPages: [],
+      endpoint,
+      note: 'Se reutilizo project_cache local sin reenviar la carga completa al modelo.'
     };
   }
 
   const preferredAuth = await getAccountReadAccessToken();
+  const rawPages: unknown[] = [];
 
   try {
-    const projects = await getProjects(preferredAuth.token, actingUserId);
+    const projects = await getProjects(preferredAuth.token, actingUserId, {
+      onPage: (payload) => rawPages.push(payload)
+    });
     replaceProjectsCache(env.apsAccountId, projects);
     return {
       authMode: preferredAuth.authMode,
       projects,
+      rawPages,
+      endpoint,
       ...(preferredAuth.note ? { note: preferredAuth.note } : {})
     };
   } catch (error) {
@@ -54,13 +64,18 @@ export async function listAccountProjects(
       message: error instanceof Error ? error.message : String(error)
     });
 
+    const fallbackRawPages: unknown[] = [];
     const fallbackToken = await get2LeggedToken(['account:read']);
-    const fallbackProjects = await getProjects(fallbackToken, actingUserId);
+    const fallbackProjects = await getProjects(fallbackToken, actingUserId, {
+      onPage: (payload) => fallbackRawPages.push(payload)
+    });
     replaceProjectsCache(env.apsAccountId, fallbackProjects);
     return {
       authMode: '2legged',
       projects: fallbackProjects,
-      note: 'Se usó fallback 2-legged controlado para no romper projects.'
+      rawPages: fallbackRawPages,
+      endpoint,
+      note: 'Se uso fallback 2-legged controlado para no romper projects.'
     };
   }
 }

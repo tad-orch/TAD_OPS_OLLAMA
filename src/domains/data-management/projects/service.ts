@@ -22,7 +22,7 @@ type RawHubProjectsResponse = {
 
 export async function listHubProjects(
   hubId?: string
-): Promise<{ hubId: string; projects: DmProject[]; note?: string }> {
+): Promise<{ hubId: string; projects: DmProject[]; endpoint: string; rawPages: unknown[]; note?: string }> {
   const effectiveHubId = hubId?.trim() || env.apsHubId;
   if (!effectiveHubId) {
     throw new Error('get_data_management_projects requiere hubId o APS_HUB_ID');
@@ -50,6 +50,8 @@ export async function listHubProjects(
     return {
       hubId: effectiveHubId,
       projects,
+      endpoint,
+      rawPages: [response.data],
       ...(auth.note ? { note: auth.note } : {})
     };
   } catch (error) {

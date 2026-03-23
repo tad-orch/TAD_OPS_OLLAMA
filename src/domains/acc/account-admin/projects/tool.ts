@@ -1,4 +1,6 @@
 import type { Tool } from 'ollama';
+import { env } from '../../../../config/env.js';
+import { persistProjectsHybridSnapshot } from '../../../../shared/storage/hybridPersistence.js';
 import type { GetProjectsToolArgs, GetProjectsToolResult } from '../../../../types/aps.js';
 import { summarizeProjectsForModel } from '../../../../utils/summarize.js';
 import { listAccountProjects } from './service.js';
@@ -25,6 +27,16 @@ export async function getProjectsByAccountTool(
   args: GetProjectsToolArgs = {}
 ): Promise<GetProjectsToolResult> {
   const response = await listAccountProjects(args);
+  await persistProjectsHybridSnapshot({
+    accountId: env.apsAccountId,
+    endpoint: response.endpoint,
+    requestContext: {
+      actingUserId: args.actingUserId ?? env.apsUserId,
+      authMode: response.authMode
+    },
+    rawPages: response.rawPages,
+    projects: response.projects
+  });
   const summarized = summarizeProjectsForModel(response.projects);
 
   return {

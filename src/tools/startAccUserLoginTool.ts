@@ -1,5 +1,5 @@
 import type { Tool } from 'ollama';
-import { clearStoredAuth, startLogin } from '../services/apsUserAuth.js';
+import { clearAuthProfile, startAccUserLogin } from '../services/apsUserAuth.js';
 import type {
   StartAccUserLoginToolArgs,
   StartAccUserLoginToolResult
@@ -27,8 +27,8 @@ export async function startAccUserLoginTool(
   args: StartAccUserLoginToolArgs = {}
 ): Promise<StartAccUserLoginToolResult> {
   if (args.force) {
-    await clearStoredAuth();
+    await clearAuthProfile();
   }
 
-  return startLogin();
+  return startAccUserLogin();
 }

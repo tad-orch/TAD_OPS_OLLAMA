@@ -268,6 +268,18 @@ async function exchangeCodeForTokens(params: {
   );
 }
 
+export async function saveAuthProfile(auth: StoredUserAuth): Promise<void> {
+  return saveStoredAuth(auth);
+}
+
+export async function loadAuthProfile(): Promise<StoredUserAuth | undefined> {
+  return loadStoredAuth();
+}
+
+export async function clearAuthProfile(): Promise<void> {
+  return clearStoredAuth();
+}
+
 export async function refreshAccessToken(
   refreshToken: string,
   scopes: string[] = env.apsThreeLeggedScopes
@@ -583,3 +595,9 @@ export async function startLogin(): Promise<StartLoginResult> {
       'Abre la URL en tu navegador, completa sign-in + MFA y espera el callback local para terminar la autenticacion.'
   };
 }
+
+export async function startAccUserLogin(): Promise<StartLoginResult> {
+  return startLogin();
+}
+
+export { exchangeCodeForTokens };

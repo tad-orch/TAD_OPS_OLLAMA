@@ -66,16 +66,18 @@ export async function listProjectSubmittals(
   token: string,
   projectId: string,
   filters: ProjectScopedReadFilters = {}
-): Promise<{ projectId: string; items: ApsSubmittal[]; source: string }> {
+): Promise<{ projectId: string; items: ApsSubmittal[]; source: string; endpoint: string; rawPages: unknown[] }> {
   const normalizedProjectId = normalizeConstructionProjectId(projectId);
   const endpoint = `${env.apsBaseUrl}/construction/submittals/v2/projects/${normalizedProjectId}/items`;
+  const rawPages: unknown[] = [];
 
   console.log(`[submittals] Listando submittals del proyecto ${normalizedProjectId}`);
 
   const rawSubmittals = await fetchConstructionList<Record<string, unknown>>({
     domain: 'submittals',
     token,
-    endpoint
+    endpoint,
+    onPage: (payload) => rawPages.push(payload)
   });
   const submittals = applySubmittalFilters(rawSubmittals.map(summarizeSubmittal), filters);
 
@@ -86,6 +88,8 @@ export async function listProjectSubmittals(
   return {
     projectId: normalizedProjectId,
     items: submittals,
-    source: SUBMITTALS_SOURCE
+    source: SUBMITTALS_SOURCE,
+    endpoint,
+    rawPages
   };
 }

@@ -1,4 +1,6 @@
 import type { Tool } from 'ollama';
+import { env } from '../../../config/env.js';
+import { persistProjectsHybridSnapshot } from '../../../shared/storage/hybridPersistence.js';
 import type { GetDmProjectsToolArgs, GetDmProjectsToolResult } from '../../../types/aps.js';
 import { summarizeDmProjectsForModel } from '../../../utils/summarize.js';
 import { listHubProjects } from './service.js';
@@ -25,6 +27,16 @@ export async function getDataManagementProjectsTool(
   args: GetDmProjectsToolArgs = {}
 ): Promise<GetDmProjectsToolResult> {
   const response = await listHubProjects(args.hubId);
+  await persistProjectsHybridSnapshot({
+    accountId: env.apsAccountId,
+    hubId: response.hubId,
+    endpoint: response.endpoint,
+    requestContext: {
+      hubId: args.hubId ?? env.apsHubId
+    },
+    rawPages: response.rawPages,
+    projects: response.projects
+  });
   const summarized = summarizeDmProjectsForModel(response.hubId, response.projects);
 
   return {

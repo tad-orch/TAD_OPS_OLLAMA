@@ -55,16 +55,18 @@ export async function listProjectRfis(
   token: string,
   projectId: string,
   filters: ProjectScopedReadFilters = {}
-): Promise<{ projectId: string; items: ApsRfi[]; source: string }> {
+): Promise<{ projectId: string; items: ApsRfi[]; source: string; endpoint: string; rawPages: unknown[] }> {
   const normalizedProjectId = normalizeConstructionProjectId(projectId);
   const endpoint = `${env.apsBaseUrl}/construction/rfis/v3/projects/${normalizedProjectId}/rfis`;
+  const rawPages: unknown[] = [];
 
   console.log(`[rfis] Listando RFIs del proyecto ${normalizedProjectId}`);
 
   const rawRfis = await fetchConstructionList<Record<string, unknown>>({
     domain: 'rfis',
     token,
-    endpoint
+    endpoint,
+    onPage: (payload) => rawPages.push(payload)
   });
   const rfis = applyRfiFilters(rawRfis.map(summarizeRfi), filters);
 
@@ -73,6 +75,8 @@ export async function listProjectRfis(
   return {
     projectId: normalizedProjectId,
     items: rfis,
-    source: RFIS_SOURCE
+    source: RFIS_SOURCE,
+    endpoint,
+    rawPages
   };
 }

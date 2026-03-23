@@ -95,7 +95,14 @@ function normalizeProjectUsersResponse(data: ApsProjectUsersResponse): ApsProjec
 
 export async function getProjects(
   token: string,
-  userId: string
+  userId: string,
+  options: {
+    onPage?: (
+      payload: ApsProjectsResponse | ApsProject[],
+      page: { limit: number; offset: number },
+      pageIndex: number
+    ) => void;
+  } = {}
 ): Promise<ApsProject[]> {
   infoLog('apsAdmin', `Listando proyectos para account ${env.apsAccountId} con User-Id ${userId}`);
 
@@ -120,7 +127,8 @@ export async function getProjects(
         return response.data;
       },
       getItems: normalizeProjectsResponse,
-      getPagination: normalizeProjectsPagination
+      getPagination: normalizeProjectsPagination,
+      ...(options.onPage ? { onPage: options.onPage } : {})
     });
 
     infoLog('apsAdmin', `Proyectos obtenidos: ${projects.length}`);
@@ -144,7 +152,13 @@ function normalizeProjectUsersPagination(
 export async function getProjectUsers(
   token: string,
   projectId: string,
-  options: GetProjectUsersOptions = {}
+  options: GetProjectUsersOptions & {
+    onPage?: (
+      payload: ApsProjectUsersResponse,
+      page: { limit: number; offset: number },
+      pageIndex: number
+    ) => void;
+  } = {}
 ): Promise<ApsProjectUser[]> {
   const cleanedProjectId = cleanProjectId(projectId);
   const actingUserId = options.actingUserId ?? env.apsUserId;
@@ -184,7 +198,8 @@ export async function getProjectUsers(
         return response.data;
       },
       getItems: normalizeProjectUsersResponse,
-      getPagination: normalizeProjectUsersPagination
+      getPagination: normalizeProjectUsersPagination,
+      ...(options.onPage ? { onPage: options.onPage } : {})
     });
 
     infoLog('apsAdmin', `Usuarios obtenidos para ${cleanedProjectId}: ${users.length}`);

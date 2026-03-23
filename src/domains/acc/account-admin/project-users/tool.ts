@@ -1,4 +1,6 @@
 import type { Tool } from 'ollama';
+import { env } from '../../../../config/env.js';
+import { persistUsersHybridSnapshot } from '../../../../shared/storage/hybridPersistence.js';
 import type { GetProjectUsersToolArgs, GetProjectUsersToolResult } from '../../../../types/aps.js';
 import { summarizeUsersForModel } from '../../../../utils/summarize.js';
 import { listProjectUsersForAccountAdmin } from './service.js';
@@ -41,6 +43,19 @@ export async function getProjectUsersTool(
   args: GetProjectUsersToolArgs
 ): Promise<GetProjectUsersToolResult> {
   const response = await listProjectUsersForAccountAdmin(args);
+  await persistUsersHybridSnapshot({
+    accountId: env.apsAccountId,
+    projectId: response.projectId,
+    endpoint: response.endpoint,
+    requestContext: {
+      actingUserId: args.actingUserId ?? env.apsUserId,
+      products: args.products,
+      region: args.region,
+      authMode: response.authMode
+    },
+    rawPages: response.rawPages,
+    users: response.users
+  });
   const summarized = summarizeUsersForModel(response.projectId, response.users);
 
   return {

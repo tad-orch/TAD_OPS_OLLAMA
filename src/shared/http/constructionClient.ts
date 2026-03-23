@@ -19,6 +19,11 @@ type FetchConstructionListOptions<TItem> = {
   endpoint: string;
   params?: Record<string, string | number | undefined>;
   initialLimit?: number;
+  onPage?: (
+    payload: RawConstructionListResponse<TItem>,
+    page: { limit: number; offset: number },
+    pageIndex: number
+  ) => void;
 };
 
 function getDeveloperMessage(data: unknown): string | undefined {
@@ -156,7 +161,8 @@ export async function fetchConstructionList<TItem>(
         return response.data;
       },
       getItems: getConstructionItems,
-      getPagination: getConstructionPagination
+      getPagination: getConstructionPagination,
+      ...(options.onPage ? { onPage: options.onPage } : {})
     });
   } catch (error) {
     const axiosError = error as AxiosError;

@@ -59,16 +59,18 @@ export async function listProjectTransmittals(
   token: string,
   projectId: string,
   filters: ProjectScopedReadFilters = {}
-): Promise<{ projectId: string; items: ApsTransmittal[]; source: string }> {
+): Promise<{ projectId: string; items: ApsTransmittal[]; source: string; endpoint: string; rawPages: unknown[] }> {
   const normalizedProjectId = normalizeConstructionProjectId(projectId);
   const endpoint = `${env.apsBaseUrl}/construction/transmittals/v1/projects/${normalizedProjectId}/transmittals`;
+  const rawPages: unknown[] = [];
 
   console.log(`[transmittals] Listando transmittals del proyecto ${normalizedProjectId}`);
 
   const rawTransmittals = await fetchConstructionList<Record<string, unknown>>({
     domain: 'transmittals',
     token,
-    endpoint
+    endpoint,
+    onPage: (payload) => rawPages.push(payload)
   });
   const transmittals = applyTransmittalFilters(rawTransmittals.map(summarizeTransmittal), filters);
 
@@ -79,6 +81,8 @@ export async function listProjectTransmittals(
   return {
     projectId: normalizedProjectId,
     items: transmittals,
-    source: TRANSMITTALS_SOURCE
+    source: TRANSMITTALS_SOURCE,
+    endpoint,
+    rawPages
   };
 }

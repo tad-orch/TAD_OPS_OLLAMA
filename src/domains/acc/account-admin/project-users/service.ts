@@ -28,6 +28,8 @@ export type AccountProjectUsersResponse = {
   authMode: AuthMode;
   projectId: string;
   users: ApsProjectUser[];
+  rawPages: unknown[];
+  endpoint: string;
   note?: string | undefined;
 };
 
@@ -40,13 +42,16 @@ export async function listProjectUsersForAccountAdmin(
   }
 
   const cleanedProjectId = projectId.replace(/^b\./, '');
+  const endpoint = `${env.apsBaseUrl}/construction/admin/v1/projects/${cleanedProjectId}/users`;
   const cachedUsers = getFreshUsersFromCache(cleanedProjectId, USERS_CACHE_TTL_MS);
   if (cachedUsers) {
     return {
       authMode: '3legged',
       projectId: cleanedProjectId,
       users: cachedUsers,
-      note: 'Se reutilizó user_cache local sin reenviar la carga completa al modelo.'
+      rawPages: [],
+      endpoint,
+      note: 'Se reutilizo user_cache local sin reenviar la carga completa al modelo.'
     };
   }
 
@@ -56,18 +61,22 @@ export async function listProjectUsersForAccountAdmin(
   const products = normalizeProducts(args.products);
   const region = args.region?.trim() || undefined;
   const preferredAuth = await getAccountReadAccessToken();
+  const rawPages: unknown[] = [];
 
   try {
     const users = await getProjectUsers(preferredAuth.token, projectId, {
       ...(actingUserId ? { actingUserId } : {}),
       ...(products ? { products } : {}),
-      ...(region ? { region } : {})
+      ...(region ? { region } : {}),
+      onPage: (payload) => rawPages.push(payload)
     });
     replaceUsersCache(cleanedProjectId, users);
     return {
       authMode: preferredAuth.authMode,
       projectId: cleanedProjectId,
       users,
+      rawPages,
+      endpoint,
       ...(preferredAuth.note ? { note: preferredAuth.note } : {})
     };
   } catch (error) {
@@ -80,18 +89,22 @@ export async function listProjectUsersForAccountAdmin(
       projectId: cleanedProjectId
     });
 
+    const fallbackRawPages: unknown[] = [];
     const fallbackToken = await get2LeggedToken(['account:read']);
     const users = await getProjectUsers(fallbackToken, projectId, {
       ...(actingUserId ? { actingUserId } : {}),
       ...(products ? { products } : {}),
-      ...(region ? { region } : {})
+      ...(region ? { region } : {}),
+      onPage: (payload) => fallbackRawPages.push(payload)
     });
     replaceUsersCache(cleanedProjectId, users);
     return {
       authMode: '2legged',
       projectId: cleanedProjectId,
       users,
-      note: 'Se usó fallback 2-legged controlado para no romper project users.'
+      rawPages: fallbackRawPages,
+      endpoint,
+      note: 'Se uso fallback 2-legged controlado para no romper project users.'
     };
   }
 }

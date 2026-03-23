@@ -1,5 +1,6 @@
 import type { Tool } from 'ollama';
 import { getValidAccessToken } from '../../../services/apsUserAuth.js';
+import { persistSubmittalsHybridSnapshot } from '../../../shared/storage/hybridPersistence.js';
 import { replaceProjectScopedReadCache } from '../../../shared/storage/projectScopedReadCacheRepo.js';
 import type {
   GetProjectSubmittalsToolArgs,
@@ -46,6 +47,16 @@ export async function getProjectSubmittalsTool(
   const response = await listProjectSubmittals(token, projectId, {
     ...(args.status?.trim() ? { status: args.status.trim() } : {}),
     ...(args.search?.trim() ? { search: args.search.trim() } : {})
+  });
+  await persistSubmittalsHybridSnapshot({
+    projectId: response.projectId,
+    endpoint: response.endpoint,
+    requestContext: {
+      status: args.status,
+      search: args.search
+    },
+    rawPages: response.rawPages,
+    items: response.items
   });
   replaceProjectScopedReadCache('submittal_cache', response.projectId, response.items);
 

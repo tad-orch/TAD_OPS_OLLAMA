@@ -1,5 +1,6 @@
 import type { Tool } from 'ollama';
 import { getValidAccessToken } from '../../../services/apsUserAuth.js';
+import { persistIssuesHybridSnapshot } from '../../../shared/storage/hybridPersistence.js';
 import { replaceProjectScopedReadCache } from '../../../shared/storage/projectScopedReadCacheRepo.js';
 import type { GetProjectIssuesToolArgs, GetProjectIssuesToolResult } from '../../../types/aps.js';
 import { summarizeProjectScopedReadForModel } from '../../../utils/summarize.js';
@@ -43,6 +44,16 @@ export async function getProjectIssuesTool(
   const response = await listProjectIssues(token, projectId, {
     ...(args.status?.trim() ? { status: args.status.trim() } : {}),
     ...(args.search?.trim() ? { search: args.search.trim() } : {})
+  });
+  await persistIssuesHybridSnapshot({
+    projectId: response.projectId,
+    endpoint: response.endpoint,
+    requestContext: {
+      status: args.status,
+      search: args.search
+    },
+    rawPages: response.rawPages,
+    items: response.items
   });
   replaceProjectScopedReadCache('issue_cache', response.projectId, response.items);
 

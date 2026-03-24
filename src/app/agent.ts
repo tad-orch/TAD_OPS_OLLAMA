@@ -1113,6 +1113,24 @@ async function resolveProjectId(
   );
 }
 
+function resolveProjectFromLocalSources(
+  sessionId: string,
+  projectReference: string,
+  cachedProjects: ApsProject[] = []
+): { projectId: string; projectName: string; projects: ApsProject[] } | undefined {
+  const localProjects = getProjectsFromOperationalSources(sessionId, cachedProjects);
+  const match = findProjectMatch(localProjects, projectReference);
+  if (!match.project) {
+    return undefined;
+  }
+
+  return {
+    projectId: match.project.id,
+    projectName: match.project.name,
+    projects: localProjects
+  };
+}
+
 async function maybeResolveToolArguments(
   toolRequest: ToolRequest,
   cachedProjects: ApsProject[]
@@ -1412,6 +1430,19 @@ async function interpretTurn(
 
   if (!plan) {
     throw new Error('No pude validar la interpretación estructurada del turno.');
+  }
+
+  if (!plan.entities.projectId && plan.entities.projectName?.trim()) {
+    const localProjectMatch = resolveProjectFromLocalSources(sessionId, plan.entities.projectName);
+    if (localProjectMatch) {
+      console.log(
+        `[agent] Planner devolvio projectName=${plan.entities.projectName}; cache local resolvio projectId=${localProjectMatch.projectId}`
+      );
+      plan.entities.projectId = localProjectMatch.projectId;
+      plan.entities.projectName = localProjectMatch.projectName;
+      plan.needsClarification = false;
+      plan.clarificationQuestion = undefined;
+    }
   }
 
   console.log(
@@ -2007,6 +2038,7 @@ async function resolveProjectForScopedTool(
   missingProjectQuestion: string
 ): Promise<ProjectResolution> {
   const sessionContext = getSessionContext(sessionId);
+  const localProjects = getProjectsFromOperationalSources(sessionId, cachedProjects);
   const reliableCurrentProject =
     sessionContext?.current_project_id
       ? {
@@ -2025,7 +2057,7 @@ async function resolveProjectForScopedTool(
   if (plan.entities.projectId && PROJECT_ID_PATTERN.test(plan.entities.projectId)) {
     const projectId = plan.entities.projectId.replace(/^b\./, '');
     const knownProjects = dedupeProjects([
-      ...cachedProjects,
+      ...localProjects,
       ...(reliableCurrentProject ? [{ id: reliableCurrentProject.id, name: reliableCurrentProject.name ?? projectId }] : []),
       ...(lastResolvedProject ? [{ id: lastResolvedProject.id, name: lastResolvedProject.name ?? lastResolvedProject.id }] : [])
     ]);
@@ -2036,10 +2068,47 @@ async function resolveProjectForScopedTool(
     return {
       status: 'resolved',
       projectId,
-      projects: cachedProjects,
+      projects: localProjects,
       source: 'provided_project_id',
       ...(knownProject?.name ? { projectName: knownProject.name } : {})
     };
+  }
+
+  const requestedProjectName = plan.entities.projectName?.trim();
+
+  const contextProjects: ApsProject[] = dedupeProjects([
+    ...localProjects,
+    ...(reliableCurrentProject
+      ? [{ id: reliableCurrentProject.id, name: reliableCurrentProject.name ?? reliableCurrentProject.id }]
+      : []),
+    ...(lastResolvedProject
+      ? [{ id: lastResolvedProject.id, name: lastResolvedProject.name ?? lastResolvedProject.id }]
+      : [])
+  ]);
+
+  if (requestedProjectName) {
+    const contextMatch = findProjectMatch(contextProjects, requestedProjectName);
+    if (contextMatch.project) {
+      console.log(
+        `[agent] resolveProjectForScopedTool uso cache local para projectName=${requestedProjectName}; projectId=${contextMatch.project.id}`
+      );
+      updateProjectSelectionMemory(sessionId, contextMatch.project.id, contextMatch.project.name);
+      return {
+        status: 'resolved',
+        projectId: contextMatch.project.id,
+        projectName: contextMatch.project.name,
+        projects: localProjects,
+        source: reliableCurrentProject?.id === contextMatch.project.id ? 'current_context' : 'project_cache'
+      };
+    }
+
+    if (contextMatch.ambiguousMatches?.length) {
+      return {
+        status: 'clarification',
+        question: formatProjectResolutionQuestion(requestedProjectName, contextMatch.ambiguousMatches),
+        projects: localProjects
+      };
+    }
   }
 
   if (plan.entities.useCurrentProject) {
@@ -2048,7 +2117,7 @@ async function resolveProjectForScopedTool(
       return {
         status: 'resolved',
         projectId: reliableCurrentProject.id,
-        projects: cachedProjects,
+        projects: localProjects,
         source: 'current_context',
         ...(reliableCurrentProject.name ? { projectName: reliableCurrentProject.name } : {})
       };
@@ -2059,7 +2128,7 @@ async function resolveProjectForScopedTool(
       return {
         status: 'resolved',
         projectId: lastResolvedProject.id,
-        projects: cachedProjects,
+        projects: localProjects,
         source: 'last_resolved_context',
         ...(lastResolvedProject.name ? { projectName: lastResolvedProject.name } : {})
       };
@@ -2072,39 +2141,17 @@ async function resolveProjectForScopedTool(
     };
   }
 
-  const requestedProjectName = plan.entities.projectName?.trim();
   if (!requestedProjectName) {
     return {
       status: 'clarification',
       question: missingProjectQuestion,
-      projects: cachedProjects
-    };
-  }
-
-  const contextProjects: ApsProject[] = dedupeProjects([
-    ...getProjectsFromMemory(sessionId),
-    ...(reliableCurrentProject
-      ? [{ id: reliableCurrentProject.id, name: reliableCurrentProject.name ?? reliableCurrentProject.id }]
-      : []),
-    ...(lastResolvedProject
-      ? [{ id: lastResolvedProject.id, name: lastResolvedProject.name ?? lastResolvedProject.id }]
-      : [])
-  ]);
-  const contextMatch = findProjectMatch(contextProjects, requestedProjectName);
-  if (contextMatch.project) {
-    updateProjectSelectionMemory(sessionId, contextMatch.project.id, contextMatch.project.name);
-    return {
-      status: 'resolved',
-      projectId: contextMatch.project.id,
-      projectName: contextMatch.project.name,
-      projects: cachedProjects,
-      source: reliableCurrentProject?.id === contextMatch.project.id ? 'current_context' : 'last_resolved_context'
+      projects: localProjects
     };
   }
 
   const cachedOrFreshProjects =
-    cachedProjects.length > 0
-      ? cachedProjects
+    localProjects.length > 0
+      ? localProjects
       : (getFreshProjectsFromCache(env.apsAccountId, PROJECTS_CACHE_TTL_MS) ?? []);
   const cacheMatch = findProjectMatch(cachedOrFreshProjects, requestedProjectName);
   if (cacheMatch.project) {

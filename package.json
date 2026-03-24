@@ -11,12 +11,16 @@
     "test:dm-projects": "tsx src/scripts/testDmProjects.ts",
     "test:auth-status": "tsx src/scripts/testAuthStatus.ts",
     "test:mysql-storage": "tsx src/scripts/testMysqlStorage.ts",
+    "test:service-resolve-project": "tsx src/scripts/testServiceResolveProject.ts",
+    "test:service-query-canonical": "tsx src/scripts/testServiceQueryCanonical.ts",
+    "test:service-mode": "tsx src/scripts/testServiceMode.ts",
     "test:ollama-projects": "tsx src/scripts/testOllamaProjects.ts",
     "test:runtime-local-projects": "tsx src/scripts/testRuntimeLocalProjects.ts",
     "test:runtime-local-issues": "tsx src/scripts/testRuntimeLocalIssues.ts",
     "test:runtime-project-promotion": "tsx src/scripts/testRuntimeProjectPromotion.ts",
     "test:runtime-raw-evidence": "tsx src/scripts/testRuntimeRawEvidence.ts",
-    "chat": "tsx src/app/chat.ts"
+    "chat": "tsx src/app/chat.ts",
+    "service": "tsx src/app/service.ts"
   },
   "keywords": [],
   "author": "",

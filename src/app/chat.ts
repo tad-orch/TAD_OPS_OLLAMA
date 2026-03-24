@@ -8,7 +8,7 @@ async function main() {
   const rl = createInterface({ input, output });
   let currentSession = createSession();
 
-  console.log(`ACC Expert Agent listo. Sesión actual: ${currentSession.id}`);
+  console.log(`ACC Expert Agent harness/debug listo. Sesion actual: ${currentSession.id}`);
   console.log('Comandos: /exit, /bye, /session, /context, /new');
 
   try {
@@ -50,7 +50,7 @@ async function main() {
 
       if (userInput === '/new') {
         currentSession = createSession();
-        console.log(`Nueva sesión: ${currentSession.id}`);
+        console.log(`Nueva sesion: ${currentSession.id}`);
         continue;
       }
 

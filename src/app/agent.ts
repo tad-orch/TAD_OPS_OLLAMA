@@ -6,6 +6,7 @@ import {
   registerProjectsSnapshot,
   registerUsersSnapshot
 } from '../db/repositories/snapshotRegistryRepo.js';
+import { saveWorkingSet } from '../db/repositories/workingSetRepo.js';
 import { addMessage } from '../db/repositories/messagesRepo.js';
 import { getFreshProjectsFromCache } from '../db/repositories/projectCacheRepo.js';
 import { getFreshUsersFromCache } from '../db/repositories/userCacheRepo.js';
@@ -13,12 +14,15 @@ import { getSessionById, touchSession, updateSessionAfterUserMessage } from '../
 import { addToolCall } from '../db/repositories/toolCallsRepo.js';
 import { systemPrompt, turnPlannerPrompt } from '../prompts/systemPrompt.js';
 import { analyzeTurn } from '../services/analyzeTurn.js';
+import { routePureConversation } from '../services/conversationRoute.js';
 import { buildContextForSession } from '../services/contextBuilder.js';
 import { decideAction } from '../services/decideAction.js';
 import { tryRunLocalSnapshotQuery } from '../services/localSnapshotQuery.js';
 import { chatWithOllama } from '../services/ollamaClient.js';
 import { getConstructionAuthStatus } from '../services/apsUserAuth.js';
+import { generateFinalResponse } from '../services/responseGenerator.js';
 import { resolveEvidence } from '../services/resolveEvidence.js';
+import { buildPlannerWorkingSetSummary, buildResolvedContextSummary } from '../services/runtimeContextSummary.js';
 import { getProjectsByAccountTool } from '../tools/getProjectsTool.js';
 import { toolDefinitions, toolHandlers } from '../tools/index.js';
 import type {
@@ -159,6 +163,7 @@ const VALID_INTENTS = new Set<AgentIntent>([
   'list_rfis',
   'list_submittals',
   'list_transmittals',
+  'check_auth_status',
   'start_acc_user_login',
   'unknown'
 ]);
@@ -207,6 +212,7 @@ const TURN_PLAN_FORMAT = {
         'list_rfis',
         'list_submittals',
         'list_transmittals',
+        'check_auth_status',
         'start_acc_user_login',
         'unknown'
       ]
@@ -670,14 +676,15 @@ function analyzeRuntimeProjectQuery(
       /\binactiv[oa]s?\b/.test(lowered));
   const wantsPrefixFilter =
     Boolean(prefix) && /\b(empiez|comienz|prefijo|siglas)\b/i.test(userText);
-  const wantsProjectList =
-    plan.intent === 'list_projects' ||
-    (/\bproyectos?\b/.test(lowered) &&
-      /\b(hub|lista|listar|dime|mu[eé]strame|muestrame|cu[aá]les|cuales)\b/.test(lowered));
   const wantsProjectUsers =
     plan.intent === 'get_project_users' ||
     ((/\busuarios?\b/.test(lowered) || /\busers?\b/.test(lowered)) &&
       (Boolean(projectReference) || /\bproyecto\b/.test(lowered) || plan.entities.useCurrentProject === true));
+  const wantsProjectList =
+    !wantsProjectUsers &&
+    (plan.intent === 'list_projects' ||
+      (/\bproyectos?\b/.test(lowered) &&
+        /\b(hub|lista|listar|dime|mu[eé]strame|muestrame|cu[aá]les|cuales)\b/.test(lowered)));
   const wantsUserCompanyCounts =
     (/\busuarios?\b/.test(lowered) || /\busers?\b/.test(lowered)) &&
     /\b(empresas?|compa(?:ñ|n)[ií]as?|company|companies)\b/.test(lowered);
@@ -1237,6 +1244,7 @@ function normalizeTurnPlan(raw: unknown): StructuredTurnPlan | undefined {
         'list_rfis',
         'list_submittals',
         'list_transmittals',
+        'check_auth_status',
         'start_acc_user_login'
       ].includes(intent));
   let needsClarification = getBoolean(raw.needsClarification) ?? false;
@@ -1305,6 +1313,14 @@ function normalizeTurnPlan(raw: unknown): StructuredTurnPlan | undefined {
     requiresTools = true;
   }
 
+  if (intent === 'check_auth_status') {
+    mode = 'operate';
+    domain = 'auth';
+    needsClarification = false;
+    clarificationQuestion = undefined;
+    requiresTools = false;
+  }
+
   if (mode === 'chat') {
     requiresTools = false;
     needsClarification = false;
@@ -1358,6 +1374,8 @@ function normalizeTurnPlan(raw: unknown): StructuredTurnPlan | undefined {
                   ? [{ name: 'get_project_transmittals', arguments: {} }]
                   : intent === 'start_acc_user_login'
                     ? [{ name: 'start_acc_user_login', arguments: {} }]
+                    : intent === 'check_auth_status'
+                      ? []
           : [];
 
   return {
@@ -1376,13 +1394,18 @@ function normalizeTurnPlan(raw: unknown): StructuredTurnPlan | undefined {
 async function interpretTurn(
   sessionId: string
 ): Promise<{ plan: StructuredTurnPlan; raw: ChatResponse }> {
+  const workingSetSummary = buildPlannerWorkingSetSummary(sessionId);
   const messages = buildAgentMessages(sessionId, {
     includeStructuredContext: true,
     maxRecentMessages: 6,
-    extraSystemMessages: [turnPlannerPrompt]
+    extraSystemMessages: [
+      ...(workingSetSummary ? [workingSetSummary] : []),
+      turnPlannerPrompt
+    ]
   });
   const response = await chatWithOllama(messages, {
-    format: TURN_PLAN_FORMAT
+    format: TURN_PLAN_FORMAT,
+    responseProfile: 'planner'
   });
   const parsedPayload = parseJsonPayloads(response.message.content).find((payload) => isRecord(payload));
   const plan = normalizeTurnPlan(parsedPayload);
@@ -1548,6 +1571,25 @@ function formatStartAccUserLoginResponse(result: StartAccUserLoginToolResult): s
 
   lines.push('');
   lines.push(`Callback local: ${result.callbackUrl}`);
+  return lines.join('\n');
+}
+
+async function formatAuthStatusResponse(): Promise<string> {
+  const status = await getConstructionAuthStatus();
+  const lines = [status.message];
+
+  lines.push('');
+  lines.push(`Modo actual: ${status.authMode}`);
+  lines.push(`Auth lista para construction endpoints: ${status.readyForConstructionEndpoints ? 'sí' : 'no'}`);
+
+  if (status.displayName || status.profileId) {
+    lines.push(`Perfil: ${status.displayName ?? status.profileId}`);
+  }
+
+  if (status.expiresAt) {
+    lines.push(`Expira: ${status.expiresAt}`);
+  }
+
   return lines.join('\n');
 }
 
@@ -1741,13 +1783,17 @@ async function getConstructionAuthMissingMessage(): Promise<string> {
 
 async function runDirectConversation(
   sessionId: string,
-  includeStructuredContext: boolean
+  resolvedContextSummary: string,
+  profile: 'chat' | 'operate'
 ): Promise<AgentResult> {
-  const messages = buildAgentMessages(sessionId, {
-    includeStructuredContext,
-    maxRecentMessages: includeStructuredContext ? 6 : 4
+  const response = await generateFinalResponse({
+    sessionId,
+    profile,
+    resolvedContextSummary,
+    ...(profile === 'chat'
+      ? { additionalGuidance: 'Si el turno es social, responde con naturalidad y sin sonar mecanico.' }
+      : {})
   });
-  const response = await chatWithOllama(messages);
   const finalText =
     response.message.content.trim() || 'No pude generar una respuesta útil para este turno.';
 
@@ -1780,6 +1826,14 @@ async function executeToolRequest(
         (isGetProjectsToolResult(toolResult) ? toolResult.projects : resolved.projects);
       updateProjectsMemory(sessionId, nextProjects);
       registerProjectsSnapshot(sessionId, nextProjects);
+      saveWorkingSet(sessionId, {
+        sourceDomain: 'projects',
+        itemIds: nextProjects.map((project) => project.id),
+        itemCount: nextProjects.length,
+        appliedFilters: [],
+        derivedFromQuery: 'tool:get_projects_by_account',
+        displaySummary: `projects:${nextProjects.length}`
+      });
     }
 
     if (toolRequest.name === 'get_project_users') {
@@ -1793,6 +1847,16 @@ async function executeToolRequest(
       if (isGetProjectUsersToolResult(toolResult)) {
         updateUsersMemory(sessionId, toolResult, resolved.resolvedProjectName);
         registerUsersSnapshot(sessionId, toolResult, resolved.resolvedProjectName);
+        saveWorkingSet(sessionId, {
+          sourceDomain: 'users',
+          sourceProjectId: toolResult.projectId,
+          ...(resolved.resolvedProjectName ? { sourceProjectName: resolved.resolvedProjectName } : {}),
+          itemIds: toolResult.users.map((user) => user.id),
+          itemCount: toolResult.users.length,
+          appliedFilters: [],
+          derivedFromQuery: 'tool:get_project_users',
+          displaySummary: `users:${toolResult.users.length}`
+        });
       }
     }
 
@@ -1867,6 +1931,23 @@ async function executeToolRequest(
         ],
         result: toolResult,
         ...(resolved.resolvedProjectName ? { projectName: resolved.resolvedProjectName } : {})
+      });
+
+      saveWorkingSet(sessionId, {
+        sourceDomain:
+          snapshotDomainByToolName[
+            toolRequest.name as Extract<
+              ToolName,
+              'get_project_issues' | 'get_project_rfis' | 'get_project_submittals' | 'get_project_transmittals'
+            >
+          ],
+        sourceProjectId: toolResult.projectId,
+        ...(resolved.resolvedProjectName ? { sourceProjectName: resolved.resolvedProjectName } : {}),
+        itemIds: toolResult.items.map((item) => item.id),
+        itemCount: toolResult.items.length,
+        appliedFilters: [],
+        derivedFromQuery: `tool:${toolRequest.name}`,
+        displaySummary: `${toolRequest.name}:${toolResult.items.length}`
       });
     }
 
@@ -2694,6 +2775,15 @@ async function executeOperationalPlan(
     );
   }
 
+  if (plan.intent === 'check_auth_status') {
+    return finalizeAgentResult(
+      sessionId,
+      await formatAuthStatusResponse(),
+      usedTools,
+      planningResponse
+    );
+  }
+
   const readConfig = PROJECT_SCOPED_READ_CONFIGS.find((config) => config.intent === plan.intent);
   if (readConfig) {
     return executeProjectScopedReadIntent(
@@ -2791,6 +2881,59 @@ export async function runAgent(
   });
   await syncConstructionAuthSessionMetadata(sessionId);
 
+  const fastConversationRoute = routePureConversation(userText);
+  if (
+    fastConversationRoute?.kind === 'greeting' ||
+    fastConversationRoute?.kind === 'thanks' ||
+    fastConversationRoute?.kind === 'goodbye' ||
+    fastConversationRoute?.kind === 'small_talk'
+  ) {
+    return finalizeAgentResult(sessionId, fastConversationRoute.message, [], undefined);
+  }
+
+  if (fastConversationRoute?.kind === 'auth_status') {
+    return finalizeAgentResult(sessionId, await formatAuthStatusResponse(), [], undefined);
+  }
+
+  if (fastConversationRoute?.kind === 'auth_start') {
+    const usedTools: string[] = [];
+    const loginResult = await callToolAndTrack(
+      sessionId,
+      {
+        name: 'start_acc_user_login',
+        arguments: {}
+      },
+      getFreshProjectsFromCache(env.apsAccountId, PROJECTS_CACHE_TTL_MS) ?? [],
+      usedTools,
+      options
+    );
+
+    if (!loginResult.ok) {
+      return finalizeAgentResult(
+        sessionId,
+        `No pude iniciar la autenticación ACC 3-legged. ${loginResult.error}`,
+        usedTools,
+        undefined
+      );
+    }
+
+    if (!isStartAccUserLoginToolResult(loginResult.payload)) {
+      return finalizeAgentResult(
+        sessionId,
+        'No pude formatear el resultado de start_acc_user_login porque la tool devolvió un payload inesperado.',
+        usedTools,
+        undefined
+      );
+    }
+
+    return finalizeAgentResult(
+      sessionId,
+      formatStartAccUserLoginResponse(loginResult.payload),
+      usedTools,
+      undefined
+    );
+  }
+
   let plan: StructuredTurnPlan | undefined;
   let planningResponse: ChatResponse | undefined;
 
@@ -2801,6 +2944,12 @@ export async function runAgent(
     const analysis = analyzeTurn(sessionId, userText, plan);
     const evidence = await resolveEvidence(sessionId, analysis);
     const actionDecision: ActionDecision = decideAction(analysis, evidence);
+    const resolvedContextSummary = buildResolvedContextSummary({
+      sessionId,
+      plan,
+      evidence,
+      action: actionDecision
+    });
     const runtimeQuery = analyzeRuntimeProjectQuery(userText, plan);
     const hasProjectContext = getProjectsFromOperationalSources(sessionId, []).length > 0;
     const hasUserContext = Boolean(getFreshUsersForSessionProject(sessionId));
@@ -2813,6 +2962,7 @@ export async function runAgent(
     const shouldHandleAsAccOperation =
       (plan.mode !== 'chat' && plan.domain !== 'unknown' && plan.intent !== 'unknown') ||
       actionDecision.kind === 'answer_local' ||
+      actionDecision.kind === 'answer_from_raw' ||
       actionDecision.kind === 'fetch_external' ||
       actionDecision.kind === 'fetch_then_analyze' ||
       actionDecision.kind === 'request_auth' ||
@@ -2826,6 +2976,13 @@ export async function runAgent(
     console.log(
       `[agent] Estrategia runtime: action=${actionDecision.kind} executionMode=${actionDecision.executionMode} intent=${plan.intent} reason=${actionDecision.reason}`
     );
+
+    if (actionDecision.kind === 'answer_chat') {
+      if (!analysis.socialIntent) {
+        return runDirectConversation(sessionId, resolvedContextSummary, 'chat');
+      }
+      return finalizeAgentResult(sessionId, actionDecision.message, [], planningResponse);
+    }
 
     if (actionDecision.kind === 'ask_clarification' && !shouldHandleAsAccOperation) {
       return finalizeAgentResult(
@@ -2847,12 +3004,23 @@ export async function runAgent(
       }
     }
 
+    if (actionDecision.kind === 'answer_from_raw') {
+      const localAnswer = await tryRunLocalSnapshotQuery(sessionId, userText, plan);
+      if (localAnswer) {
+        return finalizeAgentResult(sessionId, localAnswer, [], planningResponse);
+      }
+    }
+
     if (plan.mode === 'chat' && !shouldHandleAsAccOperation) {
-      return runDirectConversation(sessionId, plan.mode !== 'chat');
+      return runDirectConversation(sessionId, resolvedContextSummary, 'chat');
     }
 
     if (!shouldHandleAsAccOperation) {
-      return runDirectConversation(sessionId, plan.mode !== 'chat');
+      return runDirectConversation(
+        sessionId,
+        resolvedContextSummary,
+        actionDecision.executionMode === 'chat' ? 'chat' : 'operate'
+      );
     }
 
     return executeOperationalPlan(

@@ -7,6 +7,7 @@ export const ollamaClient = ollama;
 type ChatWithOllamaOptions = {
   tools?: Tool[];
   format?: string | object;
+  responseProfile?: 'planner' | 'chat' | 'operate';
 };
 
 export function getOllamaModel(): string {
@@ -32,8 +33,14 @@ export async function chatWithOllama(
     modelOptions.num_ctx = env.ollamaContextLength;
   }
 
-  if (env.ollamaTemperature !== undefined) {
-    modelOptions.temperature = env.ollamaTemperature;
+  const baseTemperature = env.ollamaTemperature;
+  const effectiveTemperature =
+    options.responseProfile === 'chat'
+      ? Math.max(baseTemperature ?? 0.15, 0.35)
+      : baseTemperature;
+
+  if (effectiveTemperature !== undefined) {
+    modelOptions.temperature = effectiveTemperature;
   }
 
   if (env.ollamaRepeatPenalty !== undefined) {
@@ -42,6 +49,7 @@ export async function chatWithOllama(
 
   console.log(
     `[ollama] messages=${messages.length} approxChars=${approxCharCount}` +
+      `${options.responseProfile ? ` profile=${options.responseProfile}` : ''}` +
       `${modelOptions.num_ctx ? ` num_ctx=${modelOptions.num_ctx}` : ''}` +
       `${modelOptions.temperature !== undefined ? ` temp=${modelOptions.temperature}` : ''}` +
       `${modelOptions.repeat_penalty !== undefined ? ` repeat_penalty=${modelOptions.repeat_penalty}` : ''}`

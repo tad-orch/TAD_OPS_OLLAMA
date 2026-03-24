@@ -9,16 +9,31 @@ async function main() {
   let currentSession = createSession();
 
   console.log(`ACC Expert Agent listo. Sesión actual: ${currentSession.id}`);
-  console.log('Comandos: /exit, /session, /context, /new');
+  console.log('Comandos: /exit, /bye, /session, /context, /new');
 
   try {
     while (true) {
-      const userInput = (await rl.question('> ')).trim();
+      let userInput = '';
+      try {
+        userInput = (await rl.question('> ')).trim();
+      } catch (error) {
+        const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+        if (code === 'ERR_USE_AFTER_CLOSE') {
+          break;
+        }
+
+        throw error;
+      }
+
       if (!userInput) {
+        if (input.readableEnded) {
+          break;
+        }
+
         continue;
       }
 
-      if (userInput === '/exit' || userInput === 'exit' || userInput === 'quit') {
+      if (userInput === '/exit' || userInput === '/bye' || userInput === 'exit' || userInput === 'quit') {
         break;
       }
 

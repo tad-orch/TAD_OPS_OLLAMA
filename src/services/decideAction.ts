@@ -4,11 +4,64 @@ export function decideAction(
   analysis: TurnAnalysis,
   evidence: EvidenceSummary
 ): ActionDecision {
-  if (analysis.plan.mode === 'chat' && !analysis.isAnalyticalFollowUp) {
+  if (analysis.socialIntent === 'greeting') {
+    return {
+      kind: 'answer_chat',
+      executionMode: 'chat',
+      reason: 'saludo simple detectado',
+      message: 'Hola. Como te ayudo con ACC?'
+    };
+  }
+
+  if (analysis.socialIntent === 'thanks') {
+    return {
+      kind: 'answer_chat',
+      executionMode: 'chat',
+      reason: 'agradecimiento simple detectado',
+      message: 'De nada. Si quieres, seguimos con la siguiente consulta.'
+    };
+  }
+
+  if (analysis.socialIntent === 'goodbye') {
+    return {
+      kind: 'answer_chat',
+      executionMode: 'chat',
+      reason: 'despedida simple detectada',
+      message: 'Hasta luego.'
+    };
+  }
+
+  if (analysis.socialIntent === 'small_talk') {
+    return {
+      kind: 'answer_chat',
+      executionMode: 'chat',
+      reason: 'small talk simple detectado',
+      message: 'Todo bien por aqui. Vamos con calma y seguimos.'
+    };
+  }
+
+  if (analysis.authIntent === 'check_auth_status') {
     return {
       kind: 'answer_local',
+      executionMode: 'local_snapshot_query',
+      reason: 'consulta explicita sobre estado de autenticacion'
+    };
+  }
+
+  if (analysis.authIntent === 'start_auth') {
+    return {
+      kind: 'fetch_external',
+      executionMode: 'external_fetch',
+      reason: 'solicitud explicita de iniciar autenticacion'
+    };
+  }
+
+  if (analysis.plan.mode === 'chat' && !analysis.isAnalyticalFollowUp) {
+    return {
+      kind: 'answer_chat',
       executionMode: 'chat',
-      reason: 'turno conversacional sin operación ACC requerida'
+      reason: 'turno conversacional sin operacion ACC requerida',
+      message: 'Estoy aqui. Dime como te ayudo.'
     };
   }
 
@@ -16,10 +69,10 @@ export function decideAction(
     return {
       kind: 'ask_clarification',
       executionMode: 'ask_clarification',
-      reason: 'falta proyecto confiable para la operación solicitada',
+      reason: 'falta proyecto confiable para la operacion solicitada',
       message:
         analysis.plan.clarificationQuestion ??
-        'Necesito saber qué proyecto quieres usar antes de continuar.'
+        'Necesito saber que proyecto quieres usar antes de continuar.'
     };
   }
 
@@ -27,9 +80,25 @@ export function decideAction(
     return {
       kind: 'request_auth',
       executionMode: 'request_auth',
-      reason: 'la operación requiere auth 3-legged lista para endpoints de construcción',
+      reason: 'la operacion requiere auth 3-legged lista para endpoints de construccion',
       message:
-        'Necesito autenticación ACC de usuario para esa consulta. Si quieres, ejecuta start_acc_user_login.'
+        'Necesito autenticacion ACC de usuario para esa consulta. Si quieres, ejecuta start_acc_user_login.'
+    };
+  }
+
+  if (analysis.isAnalyticalFollowUp && evidence.hasWorkingSet) {
+    return {
+      kind: 'answer_local',
+      executionMode: 'local_snapshot_query',
+      reason: evidence.reason
+    };
+  }
+
+  if (analysis.isAnalyticalFollowUp && evidence.hasRawEvidence && !evidence.hasCanonicalEvidence) {
+    return {
+      kind: 'answer_from_raw',
+      executionMode: 'local_snapshot_query',
+      reason: evidence.reason
     };
   }
 
@@ -57,6 +126,14 @@ export function decideAction(
     };
   }
 
+  if (evidence.hasRawEvidence) {
+    return {
+      kind: 'answer_from_raw',
+      executionMode: 'local_snapshot_query',
+      reason: evidence.reason
+    };
+  }
+
   if (evidence.evidenceSufficientForLocalAnswer) {
     return {
       kind: 'answer_local',
@@ -68,9 +145,9 @@ export function decideAction(
   return {
     kind: 'ask_clarification',
     executionMode: 'ask_clarification',
-    reason: 'no hay evidencia suficiente ni una acción externa confiable derivada',
+    reason: 'no hay evidencia suficiente ni una accion externa confiable derivada',
     message:
       analysis.plan.clarificationQuestion ??
-      'Necesito una aclaración para responder con confianza.'
+      'Necesito una aclaracion para responder con confianza.'
   };
 }

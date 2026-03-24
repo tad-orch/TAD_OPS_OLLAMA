@@ -60,6 +60,7 @@ export type AgentIntent =
   | 'list_rfis'
   | 'list_submittals'
   | 'list_transmittals'
+  | 'check_auth_status'
   | 'start_acc_user_login'
   | 'unknown';
 
@@ -115,6 +116,34 @@ export type SnapshotMetadata = {
   source?: string | undefined;
 };
 
+export type WorkingSetFilter = {
+  field: string;
+  op: 'eq' | 'contains' | 'starts_with' | 'group_by' | 'count' | 'exists';
+  value?: string | undefined;
+};
+
+export type WorkingSet = {
+  id: string;
+  sessionId: string;
+  sourceDomain: SnapshotDomain;
+  sourceSnapshotId?: string | undefined;
+  sourceDocumentId?: string | undefined;
+  sourceProjectId?: string | undefined;
+  sourceProjectName?: string | undefined;
+  itemIds: string[];
+  itemCount: number;
+  appliedFilters: WorkingSetFilter[];
+  derivedFromQuery: string;
+  displaySummary?: string | undefined;
+  createdAt: string;
+};
+
+export type WorkingSetRegistry = {
+  current?: WorkingSet | undefined;
+  recent: WorkingSet[];
+  updatedAt: string;
+};
+
 export type SessionSnapshotResource = {
   id: string;
   sessionId: string;
@@ -142,6 +171,8 @@ export type TurnAnalysis = {
   executionModeHint: AgentExecutionMode;
   isAnalyticalFollowUp: boolean;
   domain?: SnapshotDomain | undefined;
+  authIntent?: 'check_auth_status' | 'start_auth' | undefined;
+  socialIntent?: 'greeting' | 'thanks' | 'goodbye' | 'small_talk' | undefined;
   needsProjectScope: boolean;
   needsConstructionAuth: boolean;
   asksForClarificationCandidate: boolean;
@@ -152,11 +183,16 @@ export type EvidenceSummary = {
   currentProjectId?: string | undefined;
   currentProjectName?: string | undefined;
   currentProjectAliases: string[];
+  currentWorkingSet?: WorkingSet | undefined;
+  hasWorkingSet: boolean;
   hasUsableSnapshot: boolean;
   usableSnapshot?: SessionSnapshotResource | undefined;
   recentSnapshots: SessionSnapshotResource[];
   hasCanonicalEvidence: boolean;
   hasChunkEvidence: boolean;
+  hasRawEvidence: boolean;
+  rawEvidenceDocumentId?: string | undefined;
+  evidenceSource: 'working_set' | 'snapshot' | 'canonical' | 'raw' | 'none';
   hasProjectEvidence: boolean;
   hasUserEvidence: boolean;
   authMode?: '2legged' | '3legged' | undefined;
@@ -168,7 +204,18 @@ export type EvidenceSummary = {
 
 export type ActionDecision =
   | {
+      kind: 'answer_chat';
+      executionMode: AgentExecutionMode;
+      reason: string;
+      message: string;
+    }
+  | {
       kind: 'answer_local';
+      executionMode: AgentExecutionMode;
+      reason: string;
+    }
+  | {
+      kind: 'answer_from_raw';
       executionMode: AgentExecutionMode;
       reason: string;
     }

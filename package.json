@@ -15,6 +15,7 @@
     "test:runtime-local-projects": "tsx src/scripts/testRuntimeLocalProjects.ts",
     "test:runtime-local-issues": "tsx src/scripts/testRuntimeLocalIssues.ts",
     "test:runtime-project-promotion": "tsx src/scripts/testRuntimeProjectPromotion.ts",
+    "test:runtime-raw-evidence": "tsx src/scripts/testRuntimeRawEvidence.ts",
     "chat": "tsx src/app/chat.ts"
   },
   "keywords": [],
